@@ -609,10 +609,11 @@ class LockdownClient(object):
             return
 
         # second, look for usbmuxd pair record
-        mux = usbmux.create_mux()
-        if self.medium == Medium.USBMUX and isinstance(mux, PlistMuxConnection):
+        if self.medium == Medium.USBMUX:
+            sock = MuxConnection.create_usbmux_socket()
+            mux = PlistMuxConnection(sock)
             pair_record = mux.get_pair_record(self.identifier)
-        mux.close()
+            mux.close()
 
         if pair_record is not None:
             self.logger.debug(f'Using usbmuxd pair record for identifier: {self.identifier}')
