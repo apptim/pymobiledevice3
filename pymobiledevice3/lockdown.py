@@ -23,7 +23,7 @@ from pymobiledevice3.exceptions import CannotStopSessionError, ConnectionFailedE
     SetProhibitedError, StartServiceError, UserDeniedPairingError
 from pymobiledevice3.irecv_devices import IRECV_DEVICES
 from pymobiledevice3.service_connection import Medium, ServiceConnection
-from pymobiledevice3.usbmux import PlistMuxConnection
+from pymobiledevice3.usbmux import PlistMuxConnection, MuxConnection
 from pymobiledevice3.utils import sanitize_ios_version
 
 SYSTEM_BUID = '30142955-444094379208051516'
