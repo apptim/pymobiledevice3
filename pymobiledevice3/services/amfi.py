@@ -23,6 +23,16 @@ class AmfiService:
         if not resp['status']:
             raise PyMobileDevice3Exception(f'create_AMFIShowOverridePath() failed with: {resp}')
 
+    def developer_mode_is_enabled(self):
+        """
+        check if developer-mode is enabled
+        """
+        service = self._lockdown.start_service(self.SERVICE_NAME)
+        resp = service.send_recv_plist({'action': 1})
+        if not resp.get('success'):
+            return False
+        return True
+
     def enable_developer_mode(self, enable_post_restart=True):
         """
         enable developer-mode

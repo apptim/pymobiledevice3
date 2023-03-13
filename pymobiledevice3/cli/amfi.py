@@ -22,6 +22,12 @@ def amfi():
 
 
 @amfi.command(cls=Command)
+def developer_mode_is_enabled(lockdown: LockdownClient):
+    """ check developer mode status """
+    AmfiService(lockdown).developer_mode_is_enabled()
+
+
+@amfi.command(cls=Command)
 def enable_developer_mode(lockdown: LockdownClient):
     """ enable developer mode """
     AmfiService(lockdown).enable_developer_mode()
