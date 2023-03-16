@@ -56,7 +56,8 @@ class AmfiService:
             except (NoDeviceConnectedError, ConnectionFailedError, construct.core.StreamError):
                 pass
 
-        self.enable_developer_mode_post_restart()
+        # We want the user to decide to "Turn on" or "Cancel" after the device has restarted
+        # self.enable_developer_mode_post_restart()
 
     def enable_developer_mode_post_restart(self):
         """ answer the prompt that appears after the restart with "yes" """
