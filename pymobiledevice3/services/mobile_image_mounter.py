@@ -1,7 +1,7 @@
 from typing import List, Mapping
 
 from pymobiledevice3.exceptions import AlreadyMountedError, DeveloperModeIsNotEnabledError, InternalError, \
-    MessageNotSupportedError, NotMountedError, PyMobileDevice3Exception, UnsupportedCommandError
+    MessageNotSupportedError, NotMountedError, PyMobileDevice3Exception, UnsupportedCommandError, DeviceHasPasscodeSetError
 from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.services.base_service import BaseService
 
@@ -103,6 +103,8 @@ class MobileImageMounterService(BaseService):
         status = result.get('Status')
 
         if status != 'ReceiveBytesAck':
+            if 'DeviceLocked' in result.get('Error', ''):
+                raise DeviceHasPasscodeSetError()
             raise PyMobileDevice3Exception(f'command ReceiveBytes failed with: {result}')
 
         self.service.sendall(image)
