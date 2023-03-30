@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import logging
+import time
 
 import construct
 
@@ -49,12 +50,28 @@ class AmfiService:
         except ConnectionAbortedError:
             self._logger.debug('device disconnected, awaiting reconnect')
 
-        while True:
+        """
+            Workaround to solve:
+            "OSError: [WinError 10048] Only one usage of each socket address 
+            (protocol/network address/port) is normally permitted" error
+            https://github.com/doronz88/pymobiledevice3/issues/428
+
+            We 
+        """
+        retries = 0
+        max_retries = 60
+        after_reset_lockdown = None
+        while not after_reset_lockdown and retries <= max_retries:
             try:
                 self._lockdown = LockdownClient(self._lockdown.udid)
+                after_reset_lockdown = self._lockdown
                 break
             except (NoDeviceConnectedError, ConnectionFailedError, construct.core.StreamError, OSError):
-                pass
+                self._logger.error(f"Waiting for lockdown using id: {self._lockdown.udid}. "
+                                   f"Retries count: {retries}/{max_retries}")
+
+            retries = retries + 1
+            time.sleep(1)
 
         # We want the user to decide to "Turn on" or "Cancel" after the device has restarted
         # self.enable_developer_mode_post_restart()
