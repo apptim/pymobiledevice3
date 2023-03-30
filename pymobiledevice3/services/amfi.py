@@ -53,7 +53,7 @@ class AmfiService:
             try:
                 self._lockdown = LockdownClient(self._lockdown.udid)
                 break
-            except (NoDeviceConnectedError, ConnectionFailedError, construct.core.StreamError):
+            except (NoDeviceConnectedError, ConnectionFailedError, construct.core.StreamError, OSError):
                 pass
 
         # We want the user to decide to "Turn on" or "Cancel" after the device has restarted
