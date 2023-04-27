@@ -105,7 +105,8 @@ class MobileImageMounterService(BaseService):
         if status != 'ReceiveBytesAck':
             if 'DeviceLocked' in result.get('Error', ''):
                 raise DeviceHasPasscodeSetError()
-            raise PyMobileDevice3Exception(f'command ReceiveBytes failed with: {result}')
+            else:
+                raise PyMobileDevice3Exception(f'command ReceiveBytes failed with: {result}')
 
         self.service.sendall(image)
         result = self.service.recv_plist()
