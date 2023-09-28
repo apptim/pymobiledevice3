@@ -6,10 +6,10 @@ from functools import update_wrapper
 from typing import Optional, Type
 
 import click
-import inquirer
+import inquirer3
 import IPython
 import uvicorn
-from inquirer.themes import GreenPassion
+from inquirer3.themes import GreenPassion
 from prompt_toolkit import HTML, PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
@@ -23,7 +23,7 @@ from pymobiledevice3.cli.cli_common import Command, wait_return
 from pymobiledevice3.common import get_home_folder
 from pymobiledevice3.exceptions import InspectorEvaluateError, LaunchingApplicationError, \
     RemoteAutomationNotEnabledError, WebInspectorNotEnabledError, WirError
-from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
 from pymobiledevice3.services.web_protocol.cdp_server import app
 from pymobiledevice3.services.web_protocol.driver import By, Cookie, WebDriver
 from pymobiledevice3.services.web_protocol.inspector_session import InspectorSession
@@ -75,14 +75,15 @@ def create_webinspector_and_launch_app(lockdown: LockdownClient, timeout: float,
 @click.option('-v', '--verbose', is_flag=True)
 @click.option('-t', '--timeout', default=3, show_default=True, type=float)
 @catch_errors
-def opened_tabs(lockdown: LockdownClient, verbose, timeout):
+def opened_tabs(service_provider: LockdownClient, verbose, timeout):
     """
-    Show All opened tabs.
-    Opt in:
+    Show all currently opened tabs.
 
+    \b
+    Opt-in:
         Settings -> Safari -> Advanced -> Web Inspector
     """
-    inspector = WebinspectorService(lockdown=lockdown, loop=asyncio.get_event_loop())
+    inspector = WebinspectorService(lockdown=service_provider, loop=asyncio.get_event_loop())
     inspector.connect(timeout)
     while not inspector.connected_application:
         inspector.flush_input()
@@ -106,16 +107,16 @@ def opened_tabs(lockdown: LockdownClient, verbose, timeout):
 @click.argument('url')
 @click.option('-t', '--timeout', default=3, show_default=True, type=float)
 @catch_errors
-def launch(lockdown: LockdownClient, url, timeout):
+def launch(service_provider: LockdownClient, url, timeout):
     """
-    Open a specific URL in Safari.
-    Opt in:
+    Launch a specific URL in Safari.
 
+    \b
+    Opt-in:
         Settings -> Safari -> Advanced -> Web Inspector
-
         Settings -> Safari -> Advanced -> Remote Automation
     """
-    inspector, safari = create_webinspector_and_launch_app(lockdown, timeout, SAFARI)
+    inspector, safari = create_webinspector_and_launch_app(service_provider, timeout, SAFARI)
     session = inspector.automation_session(safari)
     driver = WebDriver(session)
     print('Starting session')
@@ -151,15 +152,16 @@ driver.add_cookie(
 @webinspector.command(cls=Command)
 @click.option('-t', '--timeout', default=3, show_default=True, type=float)
 @catch_errors
-def shell(lockdown: LockdownClient, timeout):
+def shell(service_provider: LockdownClient, timeout):
     """
-    Opt in:
+    Create an IPython shell for interacting with a WebView.
 
+    \b
+    Opt-in:
         Settings -> Safari -> Advanced -> Web Inspector
-
         Settings -> Safari -> Advanced -> Remote Automation
     """
-    inspector, safari = create_webinspector_and_launch_app(lockdown, timeout, SAFARI)
+    inspector, safari = create_webinspector_and_launch_app(service_provider, timeout, SAFARI)
     session = inspector.automation_session(safari)
     driver = WebDriver(session)
     try:
@@ -180,26 +182,29 @@ def shell(lockdown: LockdownClient, timeout):
 @click.option('--automation', is_flag=True, help='Use remote automation')
 @click.argument('url', required=False, default='')
 @catch_errors
-def js_shell(lockdown: LockdownClient, timeout, automation, url):
+def js_shell(service_provider: LockdownClient, timeout, automation, url):
     """
-    Opt in:
+    Create a javascript shell. This interpreter runs on your local machine,
+    but evaluates each expression on the remote
 
+    \b
+    Opt-in:
         Settings -> Safari -> Advanced -> Web Inspector
 
+    \b
     for automation also enable:
-
         Settings -> Safari -> Advanced -> Remote Automation
     """
 
     js_shell_class = AutomationJsShell if automation else InspectorJsShell
-    asyncio.run(run_js_shell(js_shell_class, lockdown, timeout, url))
+    asyncio.run(run_js_shell(js_shell_class, service_provider, timeout, url))
 
 
 udid = ''
 
 
 def create_app():
-    inspector = WebinspectorService(lockdown=LockdownClient(udid))
+    inspector = WebinspectorService(lockdown=create_using_usbmux(udid))
     app.state.inspector = inspector
     return app
 
@@ -207,15 +212,21 @@ def create_app():
 @webinspector.command(cls=Command)
 @click.option('--host', default='127.0.0.1')
 @click.option('--port', type=click.INT, default=9222)
-def cdp(lockdown: LockdownClient, host, port):
+def cdp(service_provider: LockdownClient, host, port):
+    """
+    Start a CDP server for debugging WebViews.
+
+    \b
+    In order to debug the WebView that way, open in Google Chrome:
+        chrome://inspect/#devices
+    """
     global udid
-    udid = lockdown.udid
+    udid = service_provider.udid
     uvicorn.run('pymobiledevice3.cli.webinspector:create_app', host=host, port=port, factory=True,
                 ws_ping_timeout=None, ws='wsproto', loop='asyncio')
 
 
 class JsShell(ABC):
-
     def __init__(self):
         super().__init__()
         self.prompt_session = PromptSession(lexer=PygmentsLexer(lexers.JavascriptLexer),
@@ -267,7 +278,6 @@ class JsShell(ABC):
 
 
 class AutomationJsShell(JsShell):
-
     def __init__(self, driver: WebDriver):
         super().__init__()
         self.driver = driver
@@ -293,7 +303,6 @@ class AutomationJsShell(JsShell):
 
 
 class InspectorJsShell(JsShell):
-
     def __init__(self, inspector_session: InspectorSession):
         super().__init__()
         self.inspector_session = inspector_session
@@ -327,8 +336,8 @@ class InspectorJsShell(JsShell):
             logger.error('Unable to find available pages (try to unlock device)')
             return
 
-        page_query = [inquirer.List('page', message='choose page', choices=available_pages, carousel=True)]
-        page = inquirer.prompt(page_query, theme=GreenPassion(), raise_keyboard_interrupt=True)['page']
+        page_query = [inquirer3.List('page', message='choose page', choices=available_pages, carousel=True)]
+        page = inquirer3.prompt(page_query, theme=GreenPassion(), raise_keyboard_interrupt=True)['page']
         return page
 
 

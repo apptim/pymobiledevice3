@@ -11,9 +11,9 @@ from remotezip import RemoteZip
 
 from pymobiledevice3 import usbmux
 from pymobiledevice3.cli.cli_common import print_json, set_verbosity
-from pymobiledevice3.exceptions import IncorrectModeError
+from pymobiledevice3.exceptions import ConnectionFailedError, IncorrectModeError
 from pymobiledevice3.irecv import IRecv
-from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
 from pymobiledevice3.restore.device import Device
 from pymobiledevice3.restore.recovery import Behavior, Recovery
 from pymobiledevice3.restore.restore import Restore
@@ -46,8 +46,8 @@ class Command(click.Command):
         logger.debug('searching among connected devices via lockdownd')
         for device in usbmux.list_devices():
             try:
-                lockdown = LockdownClient(serial=device.serial)
-            except IncorrectModeError:
+                lockdown = create_using_usbmux(serial=device.serial, connection_type='USB')
+            except (ConnectionFailedError, IncorrectModeError):
                 continue
             if (ecid is None) or (lockdown.ecid == value):
                 logger.debug('found device')

@@ -4,9 +4,9 @@ import tempfile
 import click
 
 from pymobiledevice3 import usbmux
-from pymobiledevice3.cli.cli_common import Command, print_json
-from pymobiledevice3.lockdown import LockdownClient
-from pymobiledevice3.tcp_forwarder import TcpForwarder
+from pymobiledevice3.cli.cli_common import print_json
+from pymobiledevice3.lockdown import create_using_usbmux
+from pymobiledevice3.tcp_forwarder import UsbmuxTcpForwarder
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +23,14 @@ def usbmux_cli():
     pass
 
 
-@usbmux_cli.command('forward', cls=Command)
+@usbmux_cli.command('forward')
 @click.argument('src_port', type=click.IntRange(1, 0xffff))
 @click.argument('dst_port', type=click.IntRange(1, 0xffff))
+@click.option('--serial', help='device serial number')
 @click.option('-d', '--daemonize', is_flag=True)
-def usbmux_forward(lockdown: LockdownClient, src_port, dst_port, daemonize):
+def usbmux_forward(src_port: int, dst_port: int, serial: str, daemonize: bool):
     """ forward tcp port """
-    forwarder = TcpForwarder(lockdown, src_port, dst_port)
+    forwarder = UsbmuxTcpForwarder(serial, dst_port, src_port)
 
     if daemonize:
         try:
@@ -60,7 +61,7 @@ def usbmux_list(color, usb, network):
         if network and not device.is_network:
             continue
 
-        lockdown = LockdownClient(udid, autopair=False, usbmux_connection_type=device.connection_type)
+        lockdown = create_using_usbmux(udid, autopair=False, connection_type=device.connection_type)
         connected_devices.append(lockdown.short_info)
 
     print_json(connected_devices, colored=color)

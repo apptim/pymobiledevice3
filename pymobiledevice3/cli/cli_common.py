@@ -3,15 +3,18 @@ import json
 import logging
 import os
 import uuid
+from typing import Callable, List, Mapping, Optional, Tuple
 
 import click
 import coloredlogs
-import inquirer
-from inquirer.themes import GreenPassion
+import hexdump
+import inquirer3
+from inquirer3.themes import GreenPassion
 from pygments import formatters, highlight, lexers
 
 from pymobiledevice3.exceptions import NoDeviceSelectedError
-from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
+from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.usbmux import select_devices_by_connection_type
 
 
@@ -35,6 +38,14 @@ def print_json(buf, colored=True, default=default_json_encoder):
         print(formatted_json)
 
 
+def print_hex(data, colored=True):
+    hex_dump = hexdump.hexdump(data, result='return')
+    if colored:
+        print(highlight(hex_dump, lexers.HexdumpLexer(), formatters.TerminalTrueColorFormatter(style='native')))
+    else:
+        print(hex_dump, end='\n\n')
+
+
 def set_verbosity(ctx, param, value):
     coloredlogs.set_level(logging.INFO - (value * 10))
 
@@ -46,55 +57,86 @@ def wait_return():
 UDID_ENV_VAR = 'PYMOBILEDEVICE3_UDID'
 
 
-class DeviceInfo:
-    def __init__(self, lockdown_client: LockdownClient):
-        self.lockdown_client = lockdown_client
-        self.product_version = self.lockdown_client.product_version
-        self.serial = self.lockdown_client.identifier
-        self.display_name = self.lockdown_client.display_name
-
-    def __str__(self):
-        if self.display_name is None:
-            return f'Unknown device, ios version: {self.product_version}, serial: {self.serial}'
-        else:
-            return f'{self.display_name}, ios version: {self.product_version}, serial: {self.serial}'
+def prompt_device_list(device_list: List):
+    device_question = [inquirer3.List('device', message='choose device', choices=device_list, carousel=True)]
+    try:
+        result = inquirer3.prompt(device_question, theme=GreenPassion(), raise_keyboard_interrupt=True)
+        return result['device']
+    except KeyboardInterrupt:
+        raise NoDeviceSelectedError()
 
 
-class Command(click.Command):
+def choose_service_provider(callback: Callable):
+    def wrap_callback_calling(**kwargs: Mapping):
+        service_provider = None
+        lockdown_service_provider = kwargs.pop('lockdown_service_provider', None)
+        rsd_service_provider = kwargs.pop('rsd_service_provider', None)
+        if lockdown_service_provider is not None:
+            service_provider = lockdown_service_provider
+        if rsd_service_provider is not None:
+            service_provider = rsd_service_provider
+        callback(service_provider=service_provider, **kwargs)
+
+    return wrap_callback_calling
+
+
+class BaseCommand(click.Command):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.params[:0] = [
-            click.Option(('lockdown', '--udid'), envvar=UDID_ENV_VAR, callback=self.udid,
-                         help=f'Device unique identifier. You may pass {UDID_ENV_VAR} environment variable to pass this'
-                              f' option as well'),
             click.Option(('verbosity', '-v', '--verbose'), count=True, callback=set_verbosity, expose_value=False),
         ]
+        self.service_provider = None
+        self.callback = choose_service_provider(self.callback)
 
-    @staticmethod
-    def udid(ctx, param, value):
+
+class LockdownCommand(BaseCommand):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.params[:0] = [
+            click.Option(('lockdown_service_provider', '--udid'), envvar=UDID_ENV_VAR, callback=self.udid,
+                         help=f'Device unique identifier. You may pass {UDID_ENV_VAR} environment variable to pass this'
+                              f' option as well'),
+        ]
+
+    def udid(self, ctx, param: str, value: str) -> Optional[LockdownClient]:
         if '_PYMOBILEDEVICE3_COMPLETE' in os.environ:
             # prevent lockdown connection establishment when in autocomplete mode
             return
 
+        if self.service_provider is not None:
+            return self.service_provider
+
         if value is not None:
-            return LockdownClient(serial=value)
+            return create_using_usbmux(serial=value)
 
         devices = select_devices_by_connection_type(connection_type='USB')
         if len(devices) <= 1:
-            return LockdownClient()
+            return create_using_usbmux()
 
-        devices_options = []
-        for device in devices:
-            lockdown_client = LockdownClient(serial=device.serial)
-            device_info = DeviceInfo(lockdown_client)
-            devices_options.append(device_info)
+        return prompt_device_list([create_using_usbmux(serial=device.serial) for device in devices])
 
-        device_question = [inquirer.List('device', message='choose device', choices=devices_options, carousel=True)]
-        try:
-            result = inquirer.prompt(device_question, theme=GreenPassion(), raise_keyboard_interrupt=True)
-            return result['device'].lockdown_client
-        except KeyboardInterrupt as e:
-            raise NoDeviceSelectedError from e
+
+class RSDCommand(BaseCommand):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.params[:0] = [
+            click.Option(('rsd_service_provider', '--rsd'), type=(str, int), callback=self.rsd, required=True,
+                         help='RSD hostname and port number'),
+        ]
+
+    def rsd(self, ctx, param: str, value: Optional[Tuple[str, int]]) -> Optional[RemoteServiceDiscoveryService]:
+        if value is not None:
+            with RemoteServiceDiscoveryService(value) as rsd:
+                self.service_provider = rsd
+                return self.service_provider
+
+
+class Command(RSDCommand, LockdownCommand):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # make the RSD optional
+        self.params[0].required = False
 
 
 class CommandWithoutAutopair(Command):
@@ -103,7 +145,7 @@ class CommandWithoutAutopair(Command):
         if '_PYMOBILEDEVICE3_COMPLETE' in os.environ:
             # prevent lockdown connection establishment when in autocomplete mode
             return
-        return LockdownClient(serial=value, autopair=False)
+        return create_using_usbmux(serial=value, autopair=False)
 
 
 class BasedIntParamType(click.ParamType):

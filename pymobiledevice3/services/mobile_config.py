@@ -2,26 +2,47 @@ import plistlib
 from enum import Enum
 from typing import Mapping
 
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.serialization import Encoding
+from cryptography.hazmat.primitives.serialization.pkcs7 import PKCS7SignatureBuilder
+from cryptography.hazmat.primitives.serialization.pkcs12 import load_pkcs12
+
 from pymobiledevice3.exceptions import ProfileError
 from pymobiledevice3.lockdown import LockdownClient
-from pymobiledevice3.services.base_service import BaseService
+from pymobiledevice3.services.lockdown_service import LockdownService
 
 
 class Purpose(Enum):
     PostSetupInstallation = 'PostSetupInstallation'
 
 
-class MobileConfigService(BaseService):
+class MobileConfigService(LockdownService):
     SERVICE_NAME = 'com.apple.mobile.MCInstall'
+    RSD_SERVICE_NAME = 'com.apple.mobile.MCInstall.shim.remote'
 
     def __init__(self, lockdown: LockdownClient):
-        super().__init__(lockdown, self.SERVICE_NAME)
+        if isinstance(lockdown, LockdownClient):
+            super().__init__(lockdown, self.SERVICE_NAME)
+        else:
+            super().__init__(lockdown, self.RSD_SERVICE_NAME)
 
     def hello(self) -> None:
         self._send_recv({'RequestType': 'HelloHostIdentifier'})
 
     def flush(self) -> None:
         self._send_recv({'RequestType': 'Flush'})
+
+    def escalate(self, pkcs12: bytes, password: str) -> None:
+        decrypted_p12 = load_pkcs12(pkcs12, password.encode('utf-8'))
+
+        escalate_response = self._send_recv({
+            'RequestType': 'Escalate',
+            'SupervisorCertificate': decrypted_p12.cert.certificate.public_bytes(Encoding.DER)
+        })
+        signed_challenge = PKCS7SignatureBuilder().set_data(escalate_response['Challenge']).add_signer(
+            decrypted_p12.cert.certificate, decrypted_p12.key, hashes.SHA256()).sign(Encoding.DER, [])
+        self._send_recv({'RequestType': 'EscalateResponse', 'SignedRequest': signed_challenge})
+        self._send_recv({'RequestType': 'ProceedWithKeybagMigration'})
 
     def get_stored_profile(self, purpose: Purpose = Purpose.PostSetupInstallation) -> Mapping:
         return self._send_recv({'RequestType': 'GetStoredProfile', 'Purpose': purpose.value})
@@ -53,6 +74,10 @@ class MobileConfigService(BaseService):
 
     def install_profile(self, payload: bytes) -> None:
         self._send_recv({'RequestType': 'InstallProfile', 'Payload': payload})
+
+    def install_profile_silent(self, profile: bytes, pkcs12: bytes, password: str) -> None:
+        self.escalate(pkcs12, password)
+        self._send_recv({'RequestType': 'InstallProfileSilent', 'Payload': profile})
 
     def remove_profile(self, identifier: str) -> None:
         profiles = self.get_profile_list()

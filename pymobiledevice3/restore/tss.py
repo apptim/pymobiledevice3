@@ -12,7 +12,7 @@ from pymobiledevice3.utils import bytes_to_uint, plist_access_path
 
 TSS_CONTROLLER_ACTION_URL = 'http://gs.apple.com/TSS/controller?action=2'
 
-TSS_CLIENT_VERSION_STRING = 'libauthinstall-914.40.2.0.1'
+TSS_CLIENT_VERSION_STRING = 'libauthinstall-973.0.1'
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,8 @@ class TSSRequest:
         }
 
     @staticmethod
-    def apply_restore_request_rules(tss_entry: typing.Mapping, parameters: typing.Mapping, rules: list):
+    def apply_restore_request_rules(tss_entry: typing.MutableMapping, parameters: typing.MutableMapping,
+                                    rules: typing.List):
         for rule in rules:
             conditions_fulfilled = True
             conditions = rule['Conditions']
@@ -350,14 +351,9 @@ class TSSRequest:
                     k = 'SepNonce'
                 self._request[k] = v
 
-        uid_mode = parameters.get('UID_MODE')
-        requires_uid_mode = parameters.get('RequiresUIDMode')
-        if uid_mode is not None:
-            self._request['UID_MODE'] = uid_mode
-        elif requires_uid_mode is not None:
-            # The logic here is missing why this value is expected to be 'false'
-            self._request['UID_MODE'] = False
+        uid_mode = parameters.get('UID_MODE', False)
 
+        self._request['UID_MODE'] = uid_mode
         self._request['@ApImg4Ticket'] = True
         self._request['@BBTicket'] = True
 

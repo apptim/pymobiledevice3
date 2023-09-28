@@ -8,7 +8,7 @@ from usb import USBError
 
 from pymobiledevice3.exceptions import PyMobileDevice3Exception
 from pymobiledevice3.irecv import IRecv, Mode
-from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.restore.base_restore import BaseRestore, Behavior
 from pymobiledevice3.restore.consts import lpol_file
 from pymobiledevice3.restore.device import Device
@@ -88,7 +88,7 @@ class Recovery(BaseRestore):
 
         # normal mode; request baseband ticket as well
         if self.device.lockdown is not None:
-            pinfo = self.device.lockdown.preflight_info
+            pinfo = self.device.preflight_info
             if pinfo:
                 self.logger.debug('adding preflight info')
 
@@ -380,14 +380,20 @@ class Recovery(BaseRestore):
         self.send_component_and_command('RestoreDeviceTree', 'devicetree')
 
         if self.build_identity.has_component('RestoreSEP'):
-            # send rsepfirmware and load it
-            self.send_component_and_command('RestoreSEP', 'rsepfirmware')
+            # attempt to send rsepfirmware and load it, otherwise continue
+            try:
+                self.send_component_and_command('RestoreSEP', 'rsepfirmware')
+            except USBError:
+                pass
 
         self.send_kernelcache()
 
     def dfu_enter_recovery(self):
         self.send_component('iBSS')
-        self.reconnect_irecv(is_recovery=True)
+        self.reconnect_irecv()
+
+        if 'SRTG' in self.device.irecv._device_info:
+            raise PyMobileDevice3Exception('Device failed to enter recovery')
 
         if self.build_identity.build_manifest.build_major > 8:
             old_nonce = self.device.irecv.ap_nonce
@@ -411,18 +417,22 @@ class Recovery(BaseRestore):
                 self.device.irecv.send_command('setenvnp boot-args rd=md0 nand-enable-reformat=1 -progress -restore')
                 self.send_applelogo(allow_missing=False)
 
+            mode = self.device.irecv.mode
             # send iBEC
             self.send_component('iBEC')
 
-            if self.device.irecv and self.device.irecv.mode.is_recovery:
+            if self.device.irecv and mode.is_recovery:
                 time.sleep(1)
                 self.device.irecv.send_command('go', b_request=1)
 
                 if self.build_identity.build_manifest.build_major < 20:
-                    self.device.irecv.ctrl_transfer(0x21, 1, timeout=5000)
+                    try:
+                        self.device.irecv.ctrl_transfer(0x21, 1, timeout=5000)
+                    except USBError:
+                        pass
 
-        self.logger.debug('Waiting for device to disconnect...')
-        time.sleep(10)
+                self.logger.debug('Waiting for device to disconnect...')
+                time.sleep(10)
 
         self.logger.debug('Waiting for device to reconnect in recovery mode...')
         self.reconnect_irecv(is_recovery=True)
@@ -432,37 +442,30 @@ class Recovery(BaseRestore):
             self.logger.info('fetching TSS record')
             self.fetch_tss_record()
 
-        if self.device.irecv:
-            if self.device.irecv.mode == Mode.DFU_MODE:
-                # device is currently in DFU mode, place it into recovery mode
-                self.dfu_enter_recovery()
-            elif self.device.irecv.mode.is_recovery:
-                # now we load the iBEC
-                try:
-                    self.send_ibec()
-                except USBError:
-                    pass
-
-                self.reconnect_irecv()
-        elif self.device.lockdown:
+        if self.device.lockdown:
             # normal mode
             self.logger.info('going into Recovery')
 
             # in case lockdown has disconnected while waiting for a ticket
-            self.device.lockdown = LockdownClient(serial=self.device.lockdown.udid)
+            self.device.lockdown = create_using_usbmux(serial=self.device.lockdown.udid, connection_type='USB')
             self.device.lockdown.enter_recovery()
 
             self.device.lockdown = None
             self.device.irecv = IRecv(self.device.ecid)
             self.reconnect_irecv()
 
+        if self.device.irecv.mode == Mode.DFU_MODE:
+            # device is currently in DFU mode, place it into recovery mode
+            self.dfu_enter_recovery()
+
+        elif self.device.irecv.mode.is_recovery:
             # now we load the iBEC
             try:
                 self.send_ibec()
             except USBError:
                 pass
 
-            self.reconnect_irecv()
+            self.reconnect_irecv(is_recovery=True)
 
         self.logger.info('device booted into recovery')
 

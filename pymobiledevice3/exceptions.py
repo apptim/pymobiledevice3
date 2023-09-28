@@ -1,6 +1,6 @@
 __all__ = [
-    'PyMobileDevice3Exception', 'DeviceVersionNotSupportedError', 'IncorrectModeError', 'DeviceVersionFormatError',
-    'ConnectionFailedError', 'NotTrustedError', 'PairingError', 'NotPairedError', 'CannotStopSessionError',
+    'PyMobileDevice3Exception', 'DeviceVersionNotSupportedError', 'IncorrectModeError',
+    'NotTrustedError', 'PairingError', 'NotPairedError', 'CannotStopSessionError',
     'PasswordRequiredError', 'StartServiceError', 'FatalPairingError', 'NoDeviceConnectedError', 'MuxException',
     'MuxVersionError', 'ArgumentError', 'AfcException', 'AfcFileNotFoundError', 'DvtException', 'DvtDirListError',
     'NotMountedError', 'AlreadyMountedError', 'UnsupportedCommandError', 'ExtractingStackshotError',
@@ -8,9 +8,10 @@ __all__ = [
     'ArbitrationError', 'InternalError', 'DeveloperModeIsNotEnabledError', 'DeviceAlreadyInUseError', 'LockdownError',
     'PairingDialogResponsePendingError', 'UserDeniedPairingError', 'InvalidHostIDError', 'SetProhibitedError',
     'MissingValueError', 'PasscodeRequiredError', 'AmfiError', 'DeviceHasPasscodeSetError', 'NotificationTimeoutError',
-    'DeveloperModeError', 'ProfileError', 'UsbmuxConnectionError', 'IRecvError', 'IRecvNoDeviceConnectedError',
+    'DeveloperModeError', 'ProfileError', 'IRecvError', 'IRecvNoDeviceConnectedError',
     'NoDeviceSelectedError', 'MessageNotSupportedError', 'InvalidServiceError', 'InspectorEvaluateError',
-    'LaunchingApplicationError',
+    'LaunchingApplicationError', 'BadCommandError', 'BadDevError', 'ConnectionFailedError', 'CoreDeviceError',
+    'AccessDeniedError'
 ]
 
 
@@ -23,14 +24,6 @@ class DeviceVersionNotSupportedError(PyMobileDevice3Exception):
 
 
 class IncorrectModeError(PyMobileDevice3Exception):
-    pass
-
-
-class DeviceVersionFormatError(PyMobileDevice3Exception):
-    pass
-
-
-class ConnectionFailedError(PyMobileDevice3Exception):
     pass
 
 
@@ -74,6 +67,18 @@ class MuxVersionError(MuxException):
     pass
 
 
+class BadCommandError(MuxException):
+    pass
+
+
+class BadDevError(MuxException):
+    pass
+
+
+class ConnectionFailedError(MuxException):
+    pass
+
+
 class ArgumentError(PyMobileDevice3Exception):
     pass
 
@@ -113,6 +118,11 @@ class AlreadyMountedError(PyMobileDevice3Exception):
     pass
 
 
+class MissingManifestError(PyMobileDevice3Exception):
+    """ No manifest could be found """
+    pass
+
+
 class UnsupportedCommandError(PyMobileDevice3Exception):
     """ Given command isn't supported for this iOS version """
     pass
@@ -125,6 +135,11 @@ class ExtractingStackshotError(PyMobileDevice3Exception):
 
 class ConnectionTerminatedError(PyMobileDevice3Exception):
     """ Raise when a connection is terminated abruptly. """
+    pass
+
+
+class StreamClosedError(ConnectionTerminatedError):
+    """ Raise when trying to send a message on a closed stream. """
     pass
 
 
@@ -174,6 +189,11 @@ class DeveloperModeIsNotEnabledError(PyMobileDevice3Exception):
     pass
 
 
+class DeveloperDiskImageNotFoundError(PyMobileDevice3Exception):
+    """ Failed to locate the correct DeveloperDiskImage.dmg """
+    pass
+
+
 class DeveloperModeError(PyMobileDevice3Exception):
     """ Raise when amfid failed to enable developer mode. """
     pass
@@ -206,6 +226,10 @@ class MissingValueError(LockdownError):
     pass
 
 
+class InvalidConnectionError(LockdownError):
+    pass
+
+
 class PasscodeRequiredError(LockdownError):
     """ passcode must be present for this action """
     pass
@@ -224,11 +248,6 @@ class NotificationTimeoutError(PyMobileDevice3Exception, TimeoutError):
 
 
 class ProfileError(PyMobileDevice3Exception):
-    pass
-
-
-class UsbmuxConnectionError(PyMobileDevice3Exception):
-    """ error connecting to usbmuxd socket """
     pass
 
 
@@ -257,4 +276,17 @@ class InspectorEvaluateError(PyMobileDevice3Exception):
 
 
 class LaunchingApplicationError(PyMobileDevice3Exception):
+    pass
+
+
+class AppInstallError(PyMobileDevice3Exception):
+    pass
+
+
+class CoreDeviceError(PyMobileDevice3Exception):
+    pass
+
+
+class AccessDeniedError(PyMobileDevice3Exception):
+    """ Need extra permissions to execute this command """
     pass

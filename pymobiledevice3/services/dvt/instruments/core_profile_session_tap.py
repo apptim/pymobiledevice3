@@ -9,6 +9,7 @@ from construct import Array, Byte, Bytes, Computed, CString, Enum, FixedSized, G
 from pykdebugparser.kd_buf_parser import RAW_VERSION2_BYTES
 
 from pymobiledevice3.exceptions import ExtractingStackshotError
+from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.resources.dsc_uuid_map import get_dsc_map
 from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
 from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo
@@ -232,10 +233,11 @@ thread_group_snapshot_trace_v2 = Struct(
 
 thread_group_snapshot_trace_v3 = Struct(
     'tgs_id' / Int64ul,
-    '_tgs_name' / FixedSized(16, GreedyString('utf8')),
+    '_tgs_name' / Bytes(16),
     'tgs_flags' / Int64ul,
-    '_tgs_name_cont' / FixedSized(16, GreedyString('utf8')),
-    'tgs_name' / Computed(lambda ctx: ctx._tgs_name.strip('\x00') + ctx._tgs_name_cont.strip('\x00')),
+    '_tgs_name_cont' / Bytes(16),
+    'tgs_name' / Computed(
+        lambda ctx: (ctx._tgs_name.strip(b'\x00') + ctx._tgs_name_cont.strip(b'\x00')).decode('utf-8')),
 )
 
 thread_group_snapshot = Struct(
@@ -676,8 +678,14 @@ class CoreProfileSessionTap(Tap):
         mach_absolute_time = time_info[0]
         numer = time_info[1]
         denom = time_info[2]
-        usecs_since_epoch = dvt.lockdown.get_value(key='TimeIntervalSince1970') * 1000000
+
+        usecs_since_epoch = None
+        timezone_ = None
+        if isinstance(dvt.lockdown, LockdownClient):
+            usecs_since_epoch = dvt.lockdown.get_value(key='TimeIntervalSince1970') * 1000000
+            timezone_ = timezone(timedelta(seconds=dvt.lockdown.get_value(key='TimeZoneOffsetFromUTC')))
+
         return dict(
             numer=numer, denom=denom, mach_absolute_time=mach_absolute_time, usecs_since_epoch=usecs_since_epoch,
-            timezone=timezone(timedelta(seconds=dvt.lockdown.get_value(key='TimeZoneOffsetFromUTC')))
+            timezone=timezone_
         )

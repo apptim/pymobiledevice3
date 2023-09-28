@@ -2,10 +2,13 @@
 [![Pypi version](https://img.shields.io/pypi/v/pymobiledevice3.svg)](https://pypi.org/project/pymobiledevice3/ "PyPi package")
 [![Downloads](https://static.pepy.tech/personalized-badge/pymobiledevice3?period=total&units=none&left_color=grey&right_color=blue&left_text=Downloads)](https://pepy.tech/project/pymobiledevice3)
 
+- [News](#news)
 - [Description](#description)
 - [Installation](#installation)
-    * [Lower iOS versions (<13)](#lower-ios-versions---13-)
+    * [OpenSSL libraries](#openssl-libraries)
 - [Usage](#usage)
+    * [Python API](#python-api)
+    * [Working with developer tools (iOS >= 17.0)](#working-with-developer-tools-ios--170)
     * [Example](#example)
 - [The bits and bytes](#the-bits-and-bytes)
     * [Lockdown services](#lockdown-services)
@@ -15,6 +18,11 @@
             - [Lockdown messages](#lockdown-messages)
             - [Instruments messages](#instruments-messages)
 - [Contributing](#contributing)
+- [Useful info](#Useful-info)
+
+# News
+
+See [NEWS](NEWS.md).
 
 # Description
 
@@ -27,6 +35,7 @@ both architecture and platform generic and is supported and tested on:
 
 Main features include:
 
+* Device discovery over bonjour
 * TCP port forwarding
 * Viewing syslog lines (including debug)
 * Profile management
@@ -74,11 +83,11 @@ eval "$(_PYMOBILEDEVICE3_COMPLETE=source_zsh pymobiledevice3)"
 eval "$(_PYMOBILEDEVICE3_COMPLETE=zsh_source pymobiledevice3)"
 ```
 
-## Lower iOS versions (<13)
+## OpenSSL libraries
 
-If you wish to use pymobiledevice3 with iOS versions lower than 13, Make sure to install `openssl`:
+Currently, openssl is explicitly required if using on older iOS version (<13).
 
-On MAC:
+On macOS:
 
 ```shell
 brew install openssl
@@ -110,6 +119,7 @@ Commands:
   amfi             amfi options
   apps             application options
   backup2          backup utils
+  bonjour          bonjour options
   companion        companion options
   crash            crash report options
   developer        developer options.
@@ -122,23 +132,75 @@ Commands:
   processes        processes cli
   profile          profile options
   provision        privision options
+  remote           remote options
   restore          restore options
   springboard      springboard options
   syslog           syslog options
-  usbmuxd          usbmuxd options
+  usbmux           usbmuxd options
   webinspector     webinspector options
 ```
 
-Or import the modules and use the API yourself:
+## Python API
+
+You could also import the modules and use the API yourself:
 
 ```python
-from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
+from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.services.syslog import SyslogService
 
-lockdown = LockdownClient()
-for line in SyslogService(lockdown=lockdown).watch():
+# Connecting via usbmuxd
+lockdown = create_using_usbmux()
+for line in SyslogService(service_provider=lockdown).watch():
     # just print all syslog lines as is
     print(line)
+
+# Or via remoted (iOS>=17)
+# First, create a tunnel using:
+#     $ sudo pymobiledevice3 remote start-quic-tunnel
+# You can of course implement it yourself by copying the same pieces of code from:
+#     https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/cli/remote.py#L68
+# Now you can simply connect to the created tunnel's host and port
+host = 'fded:c26b:3d2f::1'  # randomized
+port = 65177  # randomized
+with RemoteServiceDiscoveryService((host, port)) as rsd:
+    for line in SyslogService(service_provider=rsd).watch():
+        # just print all syslog lines as is
+        print(line)
+```
+
+## Working with developer tools (iOS >= 17.0)
+
+> **NOTE:** Currently, this is only supported on macOS
+
+Starting at iOS 17.0, Apple introduced the new CoreDevice framework to work with iOS devices. This framework relies on
+the [RemoteXPC](misc/RemoteXPC.md) protocol. In order to communicate with the developer services you'll be required to
+first create [trusted tunnel](misc/RemoteXPC.md#trusted-tunnel) as follows:
+
+```shell
+sudo python3 -m pymobiledevice3 remote start-quic-tunnel
+```
+
+The root permissions are required since this will create a new TUN/TAP device which is a high privilege operation.
+The output should be something similar to:
+
+```
+Interface: utun6
+RSD Address: fd7b:e5b:6f53::1
+RSD Port: 64337
+Use the follow connection option:
+--rsd fd7b:e5b:6f53::1 64337
+```
+
+Now, (almost) all of pymobiledevice3 accept an additional `--rsd` option for connecting to the service over this new
+tunnel. You can now try to execute any of them as follows:
+
+```shell
+# Accessing the DVT services
+python3 -m pymobiledevice3 developer dvt ls / --rsd fd7b:e5b:6f53::1 64337
+
+# Or any of the "normal" ones
+python3 -m pymobiledevice3 syslog live --rsd fd7b:e5b:6f53::1 64337
 ```
 
 ## Example
@@ -149,7 +211,9 @@ https://terminalizer.com/view/18920b405193
 There is A LOT you may do on the device using `pymobiledevice3`. This is just a TL;DR of some common operations:
 
 * Listing connected devices:
-    * `pymobiledevice3 list-devices`
+    * `pymobiledevice3 usbmux list`
+* Discover network devices using bonjour:
+    * `pymobiledevice3 bonjour browse`
 * View all syslog lines (including debug messages):
     * `pymobiledevice3 syslog live`
 * Filter out only messages containing the word "SpringBoard":
@@ -175,18 +239,20 @@ There is A LOT you may do on the device using `pymobiledevice3`. This is just a 
         * `pymobiledevice3 webinspector opened-tabs`
     * The following will require also the Remote Automation feature to be turned on:
         * Get interactive JavaScript shell on new remote automation tab:
-            * `pymobiledevice3 webinspector js_shell --automation` 
+            * `pymobiledevice3 webinspector js_shell --automation`
         * Launch an automation session to view a given URL:
             * `pymobiledevice3 webinspector launch URL`
         * Get a a selenium-like shell:
             * `pymobiledevice3 webinspector shell`
-* Mount DeveloperDiskImage:
-    * `pymobiledevice3 mounter mount`
+* Mount DeveloperDiskImage (On iOS>=17.0, each command will require an additional `--rsd` option):
+    * `pymobiledevice3 mounter auto-mount`
     * The following will assume the DeveloperDiskImage is already mounted:
         * Simulate an `x y` location:
             * `pymobiledevice3 developer simulate-location set x y`
+            * Or the following for iOS>=17.0:
+                * `pymobiledevice3 developer dvt simulate-location set --rsd HOST PORT -- x y`
         * Taking a screenshot from the device:
-            * `pymobiledevice3 developer screenshot /path/to/screen.png`
+            * `pymobiledevice3 developer dvt screenshot /path/to/screen.png`
         * View detailed process list (including ppid, uid, guid, sandboxed, etc...):
             * `pymobiledevice3 developer dvt sysmon process single`
         * Sniffing oslog:
@@ -381,3 +447,7 @@ return_value, auxiliary = developer.recv_plist()
 # Contributing
 
 See [CONTRIBUTING](CONTRIBUTING.md).
+
+# Useful info
+
+Please see [misc](misc)

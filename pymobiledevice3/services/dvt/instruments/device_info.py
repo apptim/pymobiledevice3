@@ -60,12 +60,14 @@ class DeviceInfo:
     def mach_kernel_name(self) -> str:
         return self.request_information('machKernelName')
 
-    def kpep_database(self) -> typing.Mapping:
-        return plistlib.loads(self.request_information('kpepDatabase'))
+    def kpep_database(self) -> typing.Optional[typing.Mapping]:
+        kpep_database = self.request_information('kpepDatabase')
+        if kpep_database is not None:
+            return plistlib.loads(kpep_database)
 
     def trace_codes(self):
         codes_file = self.request_information('traceCodesFile')
-        return {int(k, 16): v for k, v in map(lambda l: l.split(), codes_file.splitlines())}
+        return {int(k, 16): v for k, v in map(lambda line: line.split(), codes_file.splitlines())}
 
     def request_information(self, selector_name):
         self._channel[selector_name]()

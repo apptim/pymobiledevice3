@@ -4,9 +4,9 @@ import time
 
 import construct
 
-from pymobiledevice3.exceptions import AmfiError, ConnectionFailedError, DeveloperModeError, \
+from pymobiledevice3.exceptions import AmfiError, BadDevError, ConnectionFailedError, DeveloperModeError, \
     DeviceHasPasscodeSetError, NoDeviceConnectedError, PyMobileDevice3Exception
-from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
 from pymobiledevice3.services.heartbeat import HeartbeatService
 
 
@@ -19,7 +19,7 @@ class AmfiService:
 
     def create_amfi_show_override_path_file(self):
         """ create an empty file at AMFIShowOverridePath """
-        service = self._lockdown.start_service(self.SERVICE_NAME)
+        service = self._lockdown.start_lockdown_service(self.SERVICE_NAME)
         resp = service.send_recv_plist({'action': 0})
         if not resp['status']:
             raise PyMobileDevice3Exception(f'create_AMFIShowOverridePath() failed with: {resp}')
@@ -30,7 +30,7 @@ class AmfiService:
         if enable_post_restart is True, then wait for device restart to answer the final prompt
         with "yes"
         """
-        service = self._lockdown.start_service(self.SERVICE_NAME)
+        service = self._lockdown.start_lockdown_service(self.SERVICE_NAME)
         resp = service.send_recv_plist({'action': 1})
         error = resp.get('Error')
 
@@ -63,12 +63,10 @@ class AmfiService:
         after_reset_lockdown = None
         while not after_reset_lockdown and retries <= max_retries:
             try:
-                self._lockdown = LockdownClient(self._lockdown.udid)
-                after_reset_lockdown = self._lockdown
+                self._lockdown = create_using_usbmux(self._lockdown.udid)
                 break
-            except (NoDeviceConnectedError, ConnectionFailedError, construct.core.StreamError, OSError):
-                self._logger.error(f"Waiting for lockdown using id: {self._lockdown.udid}. "
-                                   f"Retries count: {retries}/{max_retries}")
+            except (NoDeviceConnectedError, ConnectionFailedError, BadDevError, construct.core.StreamError):
+                pass
 
             retries = retries + 1
             time.sleep(1)
@@ -78,7 +76,7 @@ class AmfiService:
 
     def enable_developer_mode_post_restart(self):
         """ answer the prompt that appears after the restart with "yes" """
-        service = self._lockdown.start_service(self.SERVICE_NAME)
+        service = self._lockdown.start_lockdown_service(self.SERVICE_NAME)
         resp = service.send_recv_plist({'action': 2})
         if not resp.get('success'):
             raise DeveloperModeError(f'enable_developer_mode_post_restart() failed: {resp}')

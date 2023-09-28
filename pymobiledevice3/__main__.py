@@ -10,6 +10,7 @@ from pymobiledevice3.cli.afc import cli as afc_cli
 from pymobiledevice3.cli.amfi import cli as amfi_cli
 from pymobiledevice3.cli.apps import cli as apps_cli
 from pymobiledevice3.cli.backup import cli as backup_cli
+from pymobiledevice3.cli.bonjour import cli as bonjour_cli
 from pymobiledevice3.cli.companion_proxy import cli as companion_cli
 from pymobiledevice3.cli.crash import cli as crash_cli
 from pymobiledevice3.cli.developer import cli as developer_cli
@@ -22,19 +23,22 @@ from pymobiledevice3.cli.power_assertion import cli as power_assertion_cli
 from pymobiledevice3.cli.processes import cli as ps_cli
 from pymobiledevice3.cli.profile import cli as profile_cli
 from pymobiledevice3.cli.provision import cli as provision_cli
+from pymobiledevice3.cli.remote import cli as remote_cli
 from pymobiledevice3.cli.restore import cli as restore_cli
 from pymobiledevice3.cli.springboard import cli as springboard_cli
 from pymobiledevice3.cli.syslog import cli as syslog_cli
 from pymobiledevice3.cli.usbmux import cli as usbmux_cli
 from pymobiledevice3.cli.webinspector import cli as webinspector_cli
-from pymobiledevice3.exceptions import DeveloperModeError, DeveloperModeIsNotEnabledError, DeviceHasPasscodeSetError, \
-    InternalError, InvalidServiceError, MessageNotSupportedError, MissingValueError, NoDeviceConnectedError, \
-    NoDeviceSelectedError, NotPairedError, PairingDialogResponsePendingError, SetProhibitedError, \
-    UsbmuxConnectionError, UserDeniedPairingError
+from pymobiledevice3.exceptions import AccessDeniedError, ConnectionFailedError, DeveloperModeError, \
+    DeveloperModeIsNotEnabledError, DeviceHasPasscodeSetError, InternalError, InvalidServiceError, \
+    MessageNotSupportedError, MissingValueError, NoDeviceConnectedError, NoDeviceSelectedError, NotPairedError, \
+    PairingDialogResponsePendingError, PasswordRequiredError, SetProhibitedError, UserDeniedPairingError
 
 coloredlogs.install(level=logging.INFO)
 
+logging.getLogger('quic').disabled = True
 logging.getLogger('asyncio').disabled = True
+logging.getLogger('zeroconf').disabled = True
 logging.getLogger('parso.cache').disabled = True
 logging.getLogger('parso.cache.pickle').disabled = True
 logging.getLogger('parso.python.diff').disabled = True
@@ -49,7 +53,8 @@ def cli():
     cli_commands = click.CommandCollection(sources=[
         developer_cli, mounter_cli, apps_cli, profile_cli, lockdown_cli, diagnostics_cli, syslog_cli, pcap_cli,
         crash_cli, afc_cli, ps_cli, notification_cli, usbmux_cli, power_assertion_cli, springboard_cli,
-        provision_cli, backup_cli, restore_cli, activation_cli, companion_cli, webinspector_cli, amfi_cli
+        provision_cli, backup_cli, restore_cli, activation_cli, companion_cli, webinspector_cli, amfi_cli, bonjour_cli,
+        remote_cli
     ])
     cli_commands.context_settings = dict(help_option_names=['-h', '--help'])
     try:
@@ -72,10 +77,11 @@ def cli():
         logger.error('Cannot enable developer-mode when passcode is set')
     except DeveloperModeError as e:
         logger.error(f'Failed to enable developer-mode. Error: {e}')
-    except UsbmuxConnectionError:
+    except ConnectionFailedError:
         logger.error('Failed to connect to usbmuxd socket. Make sure it\'s running.')
     except MessageNotSupportedError:
         logger.error('Message not supported for this iOS version')
+        traceback.print_exc()
     except InternalError:
         logger.error('Internal Error')
     except DeveloperModeIsNotEnabledError:
@@ -86,6 +92,10 @@ def cli():
                      'You may try: python3 -m pymobiledevice3 mounter auto-mount')
     except NoDeviceSelectedError:
         return
+    except PasswordRequiredError:
+        logger.error('Device is password protected. Please unlock and retry')
+    except AccessDeniedError:
+        logger.error('This command requires root privileges. Consider retrying with "sudo".')
     except BrokenPipeError:
         traceback.print_exc()
 

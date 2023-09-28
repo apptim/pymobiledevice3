@@ -1,5 +1,7 @@
-from cached_property import cached_property
+from contextlib import suppress
+from functools import cached_property
 
+from pymobiledevice3.exceptions import MissingValueError
 from pymobiledevice3.irecv import IRecv
 from pymobiledevice3.lockdown import LockdownClient
 
@@ -42,5 +44,6 @@ class Device:
     @cached_property
     def preflight_info(self):
         if self.lockdown:
-            return self.lockdown.preflight_info
+            with suppress(MissingValueError):
+                return self.lockdown.preflight_info
         return None
