@@ -1,5 +1,6 @@
 import typing
 
+from pymobiledevice3.exceptions import DeviceHasPasscodeSetError, DvtException
 from pymobiledevice3.services.remote_server import MessageAux
 
 
@@ -42,7 +43,11 @@ class ProcessControl:
             'StartSuspendedKey': start_suspended,
             'KillExisting': kill_existing,
         })
-        self._channel.launchSuspendedProcessWithDevicePath_bundleIdentifier_environment_arguments_options_(args)
-        result = self._channel.receive_plist()
+        try:
+            self._channel.launchSuspendedProcessWithDevicePath_bundleIdentifier_environment_arguments_options_(args)
+            result = self._channel.receive_plist()
+        except DvtException as exc:
+            error = exc.args[0]["NSLocalizedFailureReason"]
+            raise DeviceHasPasscodeSetError() if "the device was not, or could not be, unlocked" in error else error
         assert result
         return result
