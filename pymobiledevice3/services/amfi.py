@@ -65,7 +65,7 @@ class AmfiService:
             try:
                 self._lockdown = create_using_usbmux(self._lockdown.udid)
                 break
-            except (NoDeviceConnectedError, ConnectionFailedError, BadDevError, construct.core.StreamError):
+            except (NoDeviceConnectedError, ConnectionFailedError, BadDevError, OSError, construct.core.StreamError):
                 pass
 
             retries = retries + 1
