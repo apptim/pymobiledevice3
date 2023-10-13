@@ -9,7 +9,8 @@ from packaging.version import Version
 from pymobiledevice3.common import get_home_folder
 from pymobiledevice3.exceptions import AlreadyMountedError, DeveloperDiskImageNotFoundError, \
     DeveloperModeIsNotEnabledError, InternalError, MessageNotSupportedError, MissingManifestError, \
-    NoSuchBuildIdentityError, NotMountedError, PyMobileDevice3Exception, UnsupportedCommandError
+    NoSuchBuildIdentityError, NotMountedError, PyMobileDevice3Exception, UnsupportedCommandError, \
+    DeviceHasPasscodeSetError
 from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.restore.tss import TSSRequest
