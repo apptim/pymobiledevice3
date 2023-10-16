@@ -1,21 +1,54 @@
 import asyncio
 import json
 import logging
-from typing import Mapping, Optional
+from collections import UserDict
+from typing import List, Mapping, Optional
 
 from pymobiledevice3.exceptions import InspectorEvaluateError
 from pymobiledevice3.services.web_protocol.session_protocol import SessionProtocol
 
 logger = logging.getLogger(__name__)
-webinspector_logger = logging.getLogger('webinspector.console')
+console_logger = logging.getLogger('webinspector.console')
+heap_logger = logging.getLogger('webinspector.heap')
 
 webinspector_logger_handlers = {
-    'log': webinspector_logger.info,
-    'info': webinspector_logger.info,
-    'error': webinspector_logger.error,
-    'debug': webinspector_logger.debug,
-    'warning': webinspector_logger.warning,
+    'log': console_logger.info,
+    'info': console_logger.info,
+    'error': console_logger.error,
+    'debug': console_logger.debug,
+    'warning': console_logger.warning,
 }
+
+
+class JSObjectPreview(UserDict):
+    def __init__(self, properties: List[Mapping]):
+        super().__init__()
+        for p in properties:
+            name = p['name']
+            value = p['value']
+            self.data[name] = value
+
+
+class JSObjectProperties(UserDict):
+    def __init__(self, properties: List[Mapping]):
+        super().__init__()
+        for p in properties:
+            name = p['name']
+            if name == '__proto__':
+                self.class_name = p['value']['className']
+                continue
+            # test if a getter/setter first
+            value = p.get('get', p.get('set', p.get('value')))
+            if value is None:
+                continue
+            preview = value.get('preview')
+            if preview is not None:
+                value = JSObjectPreview(preview['properties'])
+            elif value.get('className') == 'Function':
+                value = value['description']
+            else:
+                value = value.get('value')
+            self.data[name] = value
 
 
 class InspectorSession:
@@ -27,6 +60,7 @@ class InspectorSession:
         self.protocol = protocol
         self.target_id = target_id
         self.message_id = 1
+        self._last_console_message = {}
         self._dispatch_message_responses = {}
 
         self.response_methods = {
@@ -35,6 +69,9 @@ class InspectorSession:
             'Target.dispatchMessageFromTarget': self._target_dispatch_message_from_target,
             'Target.didCommitProvisionalTarget': self._target_did_commit_provisional_target,
             'Console.messageAdded': self._console_message_added,
+            'Console.messagesCleared': lambda _: _,
+            'Console.messageRepeatCountUpdated': self._console_message_repeated_count_updated,
+            'Heap.garbageCollected': self._heap_garbage_collected,
         }
 
         self._receive_task = asyncio.create_task(self._receive_loop())
@@ -62,17 +99,30 @@ class InspectorSession:
         self.target_id = target_id
         logger.info(f'Changed to: {target_id}')
 
+    async def heap_gc(self):
+        return await self.send_command('Heap.gc')
+
+    async def heap_snapshot(self):
+        snapshot = await self.send_command('Heap.snapshot')
+        if self.target_id is not None:
+            snapshot = json.loads(snapshot['params']['message'])
+        snapshot = json.loads(snapshot)['result']['snapshotData']
+        return snapshot
+
+    async def heap_enable(self):
+        return await self.send_command('Heap.enable')
+
     async def console_enable(self):
-        await self.send_command('Console.enable')
+        return await self.send_command('Console.enable')
 
     async def runtime_enable(self):
-        await self.send_command('Runtime.enable')
+        return await self.send_command('Runtime.enable')
 
     async def send_command(self, method: str, **kwargs):
         if self.target_id is None:
-            await self.protocol.send_command(method, **kwargs)
+            return await self.protocol.send_receive(method, **kwargs)
         else:
-            await self.send_and_receive({'method': method, 'params': kwargs})
+            return await self.send_and_receive({'method': method, 'params': kwargs})
 
     async def runtime_evaluate(self, exp: str, return_by_value: bool = False):
         # if the expression is dict, it's needed to be in ()
@@ -83,15 +133,13 @@ class InspectorSession:
 
         response = await self.send_and_receive({'method': 'Runtime.evaluate',
                                                 'params': {
-                                                    'expression': f'\n'
-                                                                  f'//# sourceURL=__WebInspectorConsoleEvaluation__\n'
-                                                                  f'{exp}',
+                                                    'expression': exp,
                                                     'objectGroup': 'console',
                                                     'includeCommandLineAPI': True,
                                                     'doNotPauseOnExceptionsAndMuteConsole': False,
                                                     'silent': False,
                                                     'returnByValue': return_by_value,
-                                                    'generatePreview': False,
+                                                    'generatePreview': True,
                                                     'userGesture': True,
                                                     'awaitPromise': False,
                                                     'replMode': True,
@@ -99,7 +147,7 @@ class InspectorSession:
                                                     'uniqueContextId': '0.1'}
                                                 })
 
-        return self._parse_runtime_evaluate(response)
+        return await self._parse_runtime_evaluate(response)
 
     async def navigate_to_url(self, url: str):
         return await self.runtime_evaluate(exp=f'window.location = "{url}"')
@@ -129,7 +177,7 @@ class InspectorSession:
             if response_method in self.response_methods:
                 self.response_methods[response_method](response)
             else:
-                logger.error('Unknown response method')
+                logger.error(f'Unknown response: {response}')
 
     async def receive_response_by_id(self, message_id: int) -> Mapping:
         while True:
@@ -137,22 +185,23 @@ class InspectorSession:
                 return self._dispatch_message_responses.pop(message_id)
             await asyncio.sleep(0)
 
-    def _parse_runtime_evaluate(self, response: Mapping):
+    async def get_properties(self, object_id: str) -> JSObjectProperties:
+        message = await self.send_command(
+            'Runtime.getProperties', objectId=object_id, ownProperties=True, generatePreview=True)
+        if self.target_id is not None:
+            message = json.loads(message['params']['message'])['result']
+        return JSObjectProperties(message['properties'])
+
+    async def _parse_runtime_evaluate(self, response: Mapping):
         if self.target_id is None:
             message = response
         else:
             message = json.loads(response['params']['message'])
-        if 'error' in message:
-            error = message['error']
-            details = error['message']
-            logger.error(details)
-            raise InspectorEvaluateError(details)
-
         result = message['result']['result']
         if result.get('subtype', '') == 'error':
-            details = result['description']
-            logger.error(details)
-            raise InspectorEvaluateError(details)
+            properties = await self.get_properties(result['objectId'])
+            raise InspectorEvaluateError(properties.class_name, properties['message'], properties.get('line'),
+                                         properties.get('column'), properties.get('stack', '').split('\n'))
         elif result['type'] == 'bigint':
             return result['description']
         elif result['type'] == 'undefined':
@@ -161,7 +210,17 @@ class InspectorSession:
             value = result.get('value')
             if value is not None:
                 return value
-            return f'[object {result["className"]}]'
+
+            # TODO: JSObjectProperties()
+            preview = result['preview']
+            preview_buf = '{\n'
+            for p in result['preview']['properties']:
+                value = p.get('value', 'NOT_SUPPORTED_FOR_PREVIEW')
+                preview_buf += f'\t{p["name"]}: {value}, // {p["type"]}\n'
+            if preview.get('overflow'):
+                preview_buf += '\t// ...\n'
+            preview_buf += '}'
+            return f'[object {result["className"]}]\n{preview_buf}'
         elif result['type'] == 'function':
             return result['description']
         else:
@@ -183,11 +242,17 @@ class InspectorSession:
         else:
             logger.critical(f'unhandled message: {message}')
 
-    @staticmethod
-    def _console_message_added(message: Mapping):
+    def _console_message_added(self, message: Mapping):
         log_level = message['params']['message']['level']
         text = message['params']['message']['text']
+        self._last_console_message = message
         webinspector_logger_handlers[log_level](text)
+
+    def _console_message_repeated_count_updated(self, message: Mapping):
+        self._console_message_added(self._last_console_message)
+
+    def _heap_garbage_collected(self, message: Mapping):
+        heap_logger.debug(message['params'])
 
     def _target_created(self, response: Mapping):
         pass
