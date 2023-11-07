@@ -13,11 +13,14 @@ from click import Option, UsageError
 from inquirer3.themes import GreenPassion
 from pygments import formatters, highlight, lexers
 
-from pymobiledevice3.exceptions import DeviceNotFoundError, NoDeviceConnectedError, NoDeviceSelectedError
+from pymobiledevice3.exceptions import AccessDeniedError, DeviceNotFoundError, NoDeviceConnectedError, \
+    NoDeviceSelectedError
 from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.remote.utils import get_tunneld_devices
 from pymobiledevice3.usbmux import select_devices_by_connection_type
+
+USBMUX_OPTION_HELP = 'usbmuxd listener address (in the form of either /path/to/unix/socket OR HOST:PORT'
 
 
 class RSDOption(Option):
@@ -30,7 +33,7 @@ class RSDOption(Option):
                     ' NOTE: This argument is mutually exclusive with '
                     ' arguments: [' + ex_str + '].'
             )
-        super(RSDOption, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def handle_parse_result(self, ctx, opts, args):
         if len(opts) == 0 and isinstance(ctx.command, RSDCommand) and not (isinstance(ctx.command, Command)):
@@ -44,7 +47,7 @@ class RSDOption(Option):
                 )
             )
 
-        return super(RSDOption, self).handle_parse_result(
+        return super().handle_parse_result(
             ctx,
             opts,
             args
@@ -90,6 +93,15 @@ def wait_return():
 UDID_ENV_VAR = 'PYMOBILEDEVICE3_UDID'
 
 
+def sudo_required(func):
+    def wrapper(*args, **kwargs):
+        if os.geteuid() != 0:
+            raise AccessDeniedError()
+        else:
+            func(*args, **kwargs)
+    return wrapper
+
+
 def prompt_device_list(device_list: List):
     device_question = [inquirer3.List('device', message='choose device', choices=device_list, carousel=True)]
     try:
@@ -129,11 +141,19 @@ class BaseCommand(click.Command):
 class LockdownCommand(BaseCommand):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.usbmux_address = None
         self.params[:0] = [
+            click.Option(('usbmux', '--usbmux'), callback=self.usbmux, expose_value=False,
+                         help=USBMUX_OPTION_HELP),
             click.Option(('lockdown_service_provider', '--udid'), envvar=UDID_ENV_VAR, callback=self.udid,
                          help=f'Device unique identifier. You may pass {UDID_ENV_VAR} environment variable to pass this'
                               f' option as well'),
         ]
+
+    def usbmux(self, ctx, param: str, value: Optional[str] = None) -> None:
+        if value is None:
+            return
+        self.usbmux_address = value
 
     def udid(self, ctx, param: str, value: str) -> Optional[LockdownClient]:
         if '_PYMOBILEDEVICE3_COMPLETE' in os.environ:
@@ -146,11 +166,12 @@ class LockdownCommand(BaseCommand):
         if value is not None:
             return create_using_usbmux(serial=value)
 
-        devices = select_devices_by_connection_type(connection_type='USB')
+        devices = select_devices_by_connection_type(connection_type='USB', usbmux_address=self.usbmux_address)
         if len(devices) <= 1:
-            return create_using_usbmux()
+            return create_using_usbmux(usbmux_address=self.usbmux_address)
 
-        return prompt_device_list([create_using_usbmux(serial=device.serial) for device in devices])
+        return prompt_device_list(
+            [create_using_usbmux(serial=device.serial, usbmux_address=self.usbmux_address) for device in devices])
 
 
 class RSDCommand(BaseCommand):

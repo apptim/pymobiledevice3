@@ -10,7 +10,7 @@ from contextlib import contextmanager, suppress
 from enum import Enum
 from functools import wraps
 from pathlib import Path
-from typing import Dict, Mapping
+from typing import Dict, Mapping, Optional
 
 from packaging.version import Version
 
@@ -560,15 +560,29 @@ class LockdownClient(ABC, LockdownServiceProvider):
 
 
 class UsbmuxLockdownClient(LockdownClient):
+    def __init__(self, service: LockdownServiceConnection, host_id: str, identifier: str = None,
+                 label: str = DEFAULT_LABEL, system_buid: str = SYSTEM_BUID, pair_record: Mapping = None,
+                 pairing_records_cache_folder: Path = None, port: int = SERVICE_PORT,
+                 usbmux_address: Optional[str] = None):
+        super().__init__(service, host_id, identifier, label, system_buid, pair_record, pairing_records_cache_folder,
+                         port)
+        self.usbmux_address = usbmux_address
+
     @property
     def short_info(self) -> Dict:
         short_info = super().short_info
         short_info['ConnectionType'] = self.service.mux_device.connection_type
         return short_info
 
+    def fetch_pair_record(self) -> None:
+        if self.identifier is not None:
+            self.pair_record = get_preferred_pair_record(self.identifier, self.pairing_records_cache_folder,
+                                                         usbmux_address=self.usbmux_address)
+
     def _create_service_connection(self, port: int) -> LockdownServiceConnection:
         return LockdownServiceConnection.create_using_usbmux(self.identifier, port,
-                                                             self.service.mux_device.connection_type)
+                                                             self.service.mux_device.connection_type,
+                                                             usbmux_address=self.usbmux_address)
 
 
 class PlistUsbmuxLockdownClient(UsbmuxLockdownClient):
@@ -582,7 +596,7 @@ class PlistUsbmuxLockdownClient(UsbmuxLockdownClient):
 class TcpLockdownClient(LockdownClient):
     def __init__(self, service: LockdownServiceConnection, host_id: str, hostname: str, identifier: str = None,
                  label: str = DEFAULT_LABEL, system_buid: str = SYSTEM_BUID, pair_record: Mapping = None,
-                 pairing_records_cache_folder: Path = None, port: int = SERVICE_PORT):
+                 pairing_records_cache_folder: Path = None, port: int = SERVICE_PORT, keep_alive: bool = True):
         """
         Create a LockdownClient instance
 
@@ -595,13 +609,15 @@ class TcpLockdownClient(LockdownClient):
         :param pair_record: Use this pair record instead of the default behavior (search in host/create our own)
         :param pairing_records_cache_folder: Use the following location to search and save pair records
         :param port: lockdownd service port
+        :param keep_alive: use keep-alive to get notified when the connection is lost
         """
         super().__init__(service, host_id, identifier, label, system_buid, pair_record, pairing_records_cache_folder,
                          port)
+        self._keep_alive = keep_alive
         self.hostname = hostname
 
     def _create_service_connection(self, port: int) -> LockdownServiceConnection:
-        return LockdownServiceConnection.create_using_tcp(self.hostname, port)
+        return LockdownServiceConnection.create_using_tcp(self.hostname, port, keep_alive=self._keep_alive)
 
 
 class RemoteLockdownClient(LockdownClient):
@@ -641,7 +657,7 @@ class RemoteLockdownClient(LockdownClient):
 def create_using_usbmux(serial: str = None, identifier: str = None, label: str = DEFAULT_LABEL, autopair: bool = True,
                         connection_type: str = None, pair_timeout: int = None, local_hostname: str = None,
                         pair_record: Mapping = None, pairing_records_cache_folder: Path = None,
-                        port: int = SERVICE_PORT) -> UsbmuxLockdownClient:
+                        port: int = SERVICE_PORT, usbmux_address: Optional[str] = None) -> UsbmuxLockdownClient:
     """
     Create a UsbmuxLockdownClient instance
 
@@ -655,11 +671,13 @@ def create_using_usbmux(serial: str = None, identifier: str = None, label: str =
     :param pair_record: Use this pair record instead of the default behavior (search in host/create our own)
     :param pairing_records_cache_folder: Use the following location to search and save pair records
     :param port: lockdownd service port
+    :param usbmux_address: usbmuxd address
     :return: UsbmuxLockdownClient instance
     """
-    service = LockdownServiceConnection.create_using_usbmux(serial, port, connection_type=connection_type)
+    service = LockdownServiceConnection.create_using_usbmux(serial, port, connection_type=connection_type,
+                                                            usbmux_address=usbmux_address)
     cls = UsbmuxLockdownClient
-    with usbmux.create_mux() as client:
+    with usbmux.create_mux(usbmux_address=usbmux_address) as client:
         if isinstance(client, PlistMuxConnection):
             # Only the Plist version of usbmuxd supports this message type
             system_buid = client.get_buid()
@@ -672,12 +690,13 @@ def create_using_usbmux(serial: str = None, identifier: str = None, label: str =
     return cls.create(
         service, identifier=identifier, label=label, system_buid=system_buid, local_hostname=local_hostname,
         pair_record=pair_record, pairing_records_cache_folder=pairing_records_cache_folder, pair_timeout=pair_timeout,
-        autopair=autopair)
+        autopair=autopair, usbmux_address=usbmux_address)
 
 
 def create_using_tcp(hostname: str, identifier: str = None, label: str = DEFAULT_LABEL, autopair: bool = True,
                      pair_timeout: int = None, local_hostname: str = None, pair_record: Mapping = None,
-                     pairing_records_cache_folder: Path = None, port: int = SERVICE_PORT) -> TcpLockdownClient:
+                     pairing_records_cache_folder: Path = None, port: int = SERVICE_PORT,
+                     keep_alive: bool = False) -> TcpLockdownClient:
     """
     Create a TcpLockdownClient instance
 
@@ -690,13 +709,14 @@ def create_using_tcp(hostname: str, identifier: str = None, label: str = DEFAULT
     :param pair_record: Use this pair record instead of the default behavior (search in host/create our own)
     :param pairing_records_cache_folder: Use the following location to search and save pair records
     :param port: lockdownd service port
+    :param keep_alive: use keep-alive to get notified when the connection is lost
     :return: TcpLockdownClient instance
     """
-    service = LockdownServiceConnection.create_using_tcp(hostname, port)
+    service = LockdownServiceConnection.create_using_tcp(hostname, port, keep_alive=keep_alive)
     client = TcpLockdownClient.create(
         service, identifier=identifier, label=label, local_hostname=local_hostname, pair_record=pair_record,
         pairing_records_cache_folder=pairing_records_cache_folder, pair_timeout=pair_timeout, autopair=autopair,
-        port=port, hostname=hostname)
+        port=port, hostname=hostname, keep_alive=keep_alive)
     return client
 
 
