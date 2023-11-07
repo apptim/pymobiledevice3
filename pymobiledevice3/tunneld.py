@@ -4,7 +4,7 @@ import logging
 from contextlib import suppress
 from typing import Dict, Tuple
 
-import ifaddr.netifaces
+import ifaddr
 import uvicorn
 import zeroconf
 from fastapi import FastAPI
