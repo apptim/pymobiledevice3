@@ -6,6 +6,7 @@ import signal
 from contextlib import suppress
 from typing import Dict, Tuple
 
+import fastapi
 import ifaddr
 import uvicorn
 import zeroconf
