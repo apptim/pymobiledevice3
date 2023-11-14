@@ -1,6 +1,8 @@
 import asyncio
 import dataclasses
 import logging
+import os
+import signal
 from contextlib import suppress
 from typing import Dict, Tuple
 
@@ -12,6 +14,7 @@ from packaging import version
 from zeroconf import IPVersion
 from zeroconf.asyncio import AsyncZeroconf
 
+from pymobiledevice3.exceptions import InterfaceIndexNotFoundError
 from pymobiledevice3.remote.module_imports import start_quic_tunnel
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.remote.utils import stop_remoted
@@ -54,6 +57,14 @@ class TunneldCore:
             with suppress(asyncio.CancelledError):
                 await task
 
+    def clear(self) -> None:
+        """ Clear active tunnels """
+        for udid, tunnel in self.active_tunnels.items():
+            logger.info(f'Removing tunnel {tunnel.address}')
+            tunnel.rsd.close()
+            tunnel.task.cancel()
+        self.active_tunnels = {}
+
     @staticmethod
     async def handle_new_tunnel(tun: Tunnel) -> None:
         """ Create new tunnel """
@@ -85,6 +96,7 @@ class TunneldCore:
             # For each detached tunnel, cancel its task, log the removal, and remove it from the active tunnels
             for k in diff:
                 self.active_tunnels[k].task.cancel()
+                self.active_tunnels[k].rsd.close()
                 logger.info(f'Removing tunnel {self.active_tunnels[k].address}')
                 self.active_tunnels.pop(k)
 
@@ -105,6 +117,7 @@ class TunneldCore:
             if address_segments != v.split(':')[:-1]:
                 continue
             return k
+        raise InterfaceIndexNotFoundError(address=address)
 
     async def discover_new_devices(self) -> None:
         """ Continuously scans for devices advertising 'RSD' through IPv6 adapters """
@@ -120,7 +133,11 @@ class TunneldCore:
                     continue
                 # Extract device details
                 addr = info.parsed_addresses(IPVersion.V6Only)[0]
-                interface_index = self.get_interface_index(addr)
+                try:
+                    interface_index = self.get_interface_index(addr)
+                except InterfaceIndexNotFoundError as e:
+                    logger.warning(f'Failed to find interface index for {e.address}')
+                    continue
                 if interface_index in self.active_tunnels:
                     continue
                 # Connect to the discovered device
@@ -164,6 +181,17 @@ class TunneldRunner:
                 tunnels[v.rsd.udid] = v.address
             return tunnels
 
+        @self._app.get('/shutdown')
+        async def shutdown() -> fastapi.Response:
+            """ Shutdown Tunneld """
+            os.kill(os.getpid(), signal.SIGINT)
+            return fastapi.Response(status_code=200, content='Server shutting down...')
+
+        @self._app.get('/clear_tunnels')
+        async def clear_tunnels() -> fastapi.Response:
+            self._tunneld_core.clear()
+            return fastapi.Response(status_code=200, content='Cleared tunnels...')
+
         @self._app.on_event('startup')
         async def on_startup() -> None:
             """ start TunneldCore """
@@ -172,6 +200,7 @@ class TunneldRunner:
 
         @self._app.on_event('shutdown')
         async def on_close() -> None:
+            logger.info('Closing tunneld tasks...')
             await self._tunneld_core.close()
 
     def _run_app(self) -> None:
