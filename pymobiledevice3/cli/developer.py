@@ -15,7 +15,6 @@ import click
 from click.exceptions import MissingParameter, UsageError
 from packaging.version import Version
 from pykdebugparser.pykdebugparser import PyKdebugParser
-from termcolor import colored
 
 import pymobiledevice3
 from pymobiledevice3.cli.cli_common import BASED_INT, Command, RSDCommand, default_json_encoder, print_json, wait_return
@@ -162,14 +161,20 @@ def pkill(service_provider: LockdownClient, expression):
 @click.option('--suspended', is_flag=True, help='Same as WaitForDebugger')
 @click.option('--env', multiple=True, type=click.Tuple((str, str)),
               help='Environment variables to pass to process given as a list of key value')
-def launch(service_provider: LockdownClient, arguments: str, kill_existing: bool, suspended: bool, env: tuple):
+@click.option('--stream', is_flag=True)
+def launch(service_provider: LockdownClient, arguments: str, kill_existing: bool, suspended: bool, env: tuple,
+           stream: bool) -> None:
     """ Launch a process. """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         parsed_arguments = shlex.split(arguments)
-        pid = ProcessControl(dvt).launch(bundle_id=parsed_arguments[0], arguments=parsed_arguments[1:],
-                                         kill_existing=kill_existing, start_suspended=suspended,
-                                         environment=dict(env))
+        process_control = ProcessControl(dvt)
+        pid = process_control.launch(bundle_id=parsed_arguments[0], arguments=parsed_arguments[1:],
+                                     kill_existing=kill_existing, start_suspended=suspended,
+                                     environment=dict(env))
         print(f'Process launched with pid {pid}')
+        while stream:
+            for output_received in process_control:
+                logging.getLogger(f'PID:{output_received.pid}').info(output_received.message.strip())
 
 
 @dvt.command('shell', cls=Command)
@@ -592,12 +597,12 @@ def dvt_oslog(service_provider: LockdownClient, color, pid):
                     formatted_message = message.name
 
                 if color:
-                    timestamp = colored(str(timestamp), attrs=['bold'])
-                    message_pid = colored(str(message_pid), 'magenta')
-                    subsystem = colored(subsystem, 'green')
-                    category = colored(category, 'green')
-                    image_name = colored(image_name, 'yellow')
-                    message_type = colored(message_type, 'cyan')
+                    timestamp = click.style(str(timestamp), bold=True)
+                    message_pid = click.style(str(message_pid), 'magenta')
+                    subsystem = click.style(subsystem, 'green')
+                    category = click.style(category, 'green')
+                    image_name = click.style(image_name, 'yellow')
+                    message_type = click.style(message_type, 'cyan')
 
                 print(f'[{timestamp}][{subsystem}][{category}][{message_pid}][{image_name}] '
                       f'<{message_type}>: {formatted_message}')
