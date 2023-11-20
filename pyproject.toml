@@ -1,6 +1,6 @@
 [project]
 name = "pymobiledevice3"
-version = "2.28.0"
+version = "2.29.1"
 description = "Pure python3 implementation for working with iDevices (iPhone, etc...)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -27,7 +27,7 @@ classifiers = [
 dynamic = ["dependencies"]
 
 [project.optional-dependencies]
-test = ["pytest", "cmd2_ext_test"]
+test = ["pytest"]
 
 [project.urls]
 "Homepage" = "https://github.com/doronz88/pymobiledevice3"
