@@ -10,6 +10,7 @@ import click
 import inquirer3
 import requests
 
+from pymobiledevice3.exceptions import MobileActivationException
 from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
 
 ACTIVATION_USER_AGENT_IOS = 'iOS Device Activator (MobileActivation-20 built on Jan 15 2012 at 19:07:28)'
@@ -78,7 +79,7 @@ class MobileActivationService:
             server_info[k] = v
         return ActivationForm(title=title, description=description, fields=fields, server_info=server_info)
 
-    def activate(self) -> None:
+    def activate(self, skip_apple_id_query: bool = False) -> None:
         blob = self.create_activation_session_info()
 
         # create drmHandshake request with blob from device
@@ -92,6 +93,8 @@ class MobileActivationService:
         content_type = headers['Content-Type']
 
         if content_type == 'application/x-buddyml':
+            if skip_apple_id_query:
+                raise MobileActivationException('Device is iCloud locked')
             activation_form = self._get_activation_form_from_response(content.decode())
             click.secho(activation_form.title, bold=True)
             click.secho(activation_form.description)
@@ -113,10 +116,18 @@ class MobileActivationService:
         return self.send_command('DeactivateRequest')
 
     def create_activation_session_info(self):
-        return self.send_command('CreateTunnel1SessionInfoRequest')['Value']
+        response = self.send_command('CreateTunnel1SessionInfoRequest')
+        error = response.get('Error')
+        if error is not None:
+            raise MobileActivationException(f'Mobile activation can not be done due to: {response}')
+        return response['Value']
 
     def create_activation_info_with_session(self, handshake_response):
-        return self.send_command('CreateTunnel1ActivationInfoRequest', handshake_response)['Value']
+        response = self.send_command('CreateTunnel1ActivationInfoRequest', handshake_response)
+        error = response.get('Error')
+        if error is not None:
+            raise MobileActivationException(f'Mobile activation can not be done due to: {response}')
+        return response['Value']
 
     def activate_with_session(self, activation_record, headers):
         data = {

@@ -86,14 +86,14 @@ def _reconnect_on_remote_close(f):
         try:
             return f(*args, **kwargs)
         except (BrokenPipeError, ConnectionTerminatedError):
-            self = args[0]
+            self: LockdownClient = args[0]
 
             # first we release the socket on our end to avoid a ResourceWarning
             self.close()
 
             # now we re-establish the connection
             self.logger.debug('remote device closed the connection. reconnecting...')
-            self.afc = self._create_service_connection(self.port)
+            self.service = self._create_service_connection(self.port)
             self.validate_pairing()
             return f(*args, **kwargs)
 
@@ -217,6 +217,16 @@ class LockdownClient(ABC, LockdownServiceProvider):
     @property
     def share_iphone_analytics_enabled(self) -> bool:
         return self.get_value('com.apple.MobileDeviceCrashCopy', 'ShouldSubmit')
+
+    @property
+    def assistive_touch(self) -> bool:
+        """AssistiveTouch (the on-screen software home button)"""
+        return bool(self.get_value('com.apple.Accessibility').get('AssistiveTouchEnabledByiTunes', 0))
+
+    @assistive_touch.setter
+    def assistive_touch(self, value: bool) -> None:
+        """AssistiveTouch (the on-screen software home button)"""
+        self.set_value(int(value), 'com.apple.Accessibility', 'AssistiveTouchEnabledByiTunes')
 
     @property
     def voice_over(self) -> bool:

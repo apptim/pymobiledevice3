@@ -3,7 +3,7 @@ import dataclasses
 import logging
 import os
 import signal
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from typing import Dict, Tuple
 
 import fastapi
@@ -16,7 +16,8 @@ from zeroconf import IPVersion
 from zeroconf.asyncio import AsyncZeroconf
 
 from pymobiledevice3.exceptions import InterfaceIndexNotFoundError
-from pymobiledevice3.remote.module_imports import start_quic_tunnel
+from pymobiledevice3.remote.common import TunnelProtocol
+from pymobiledevice3.remote.module_imports import start_tunnel
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.remote.utils import stop_remoted
 
@@ -35,9 +36,10 @@ class Tunnel:
 
 
 class TunneldCore:
-    def __init__(self):
+    def __init__(self, protocol: TunnelProtocol = TunnelProtocol.QUIC):
         self.adapters: Dict[int, str] = {}
         self.active_tunnels: Dict[int, Tunnel] = {}
+        self.protocol = protocol
         self._type = '_remoted._tcp.local.'
         self._name = 'ncm._remoted._tcp.local.'
         self._interval = .5
@@ -66,10 +68,9 @@ class TunneldCore:
             tunnel.task.cancel()
         self.active_tunnels = {}
 
-    @staticmethod
-    async def handle_new_tunnel(tun: Tunnel) -> None:
+    async def handle_new_tunnel(self, tun: Tunnel) -> None:
         """ Create new tunnel """
-        async with start_quic_tunnel(tun.rsd) as tunnel_result:
+        async with start_tunnel(tun.rsd, protocol=self.protocol) as tunnel_result:
             tun.address = tunnel_result.address, tunnel_result.port
             logger.info(f'Created tunnel --rsd {tun.address[0]} {tun.address[1]}')
             await tunnel_result.client.wait_closed()
@@ -162,15 +163,25 @@ class TunneldCore:
 
 class TunneldRunner:
     """ TunneldRunner orchestrate between the webserver and TunneldCore """
-    @classmethod
-    def create(cls, host: str, port: int) -> None:
-        cls(host, port)._run_app()
 
-    def __init__(self, host: str, port: int):
+    @classmethod
+    def create(cls, host: str, port: int, protocol: TunnelProtocol = TunnelProtocol.QUIC) -> None:
+        cls(host, port, protocol=protocol)._run_app()
+
+    def __init__(self, host: str, port: int, protocol: TunnelProtocol = TunnelProtocol.QUIC):
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            logging.getLogger('zeroconf').disabled = True
+            self._tunneld_core.start()
+            yield
+            logger.info('Closing tunneld tasks...')
+            await self._tunneld_core.close()
+
         self.host = host
         self.port = port
-        self._app = FastAPI()
-        self._tunneld_core = TunneldCore()
+        self.protocol = protocol
+        self._app = FastAPI(lifespan=lifespan)
+        self._tunneld_core = TunneldCore(protocol)
 
         @self._app.get('/')
         async def list_tunnels() -> Dict[str, Tuple[str, int]]:
@@ -192,17 +203,6 @@ class TunneldRunner:
         async def clear_tunnels() -> fastapi.Response:
             self._tunneld_core.clear()
             return fastapi.Response(status_code=200, content='Cleared tunnels...')
-
-        @self._app.on_event('startup')
-        async def on_startup() -> None:
-            """ start TunneldCore """
-            logging.getLogger('zeroconf').disabled = True
-            self._tunneld_core.start()
-
-        @self._app.on_event('shutdown')
-        async def on_close() -> None:
-            logger.info('Closing tunneld tasks...')
-            await self._tunneld_core.close()
 
     def _run_app(self) -> None:
         uvicorn.run(self._app, host=self.host, port=self.port, loop='asyncio')

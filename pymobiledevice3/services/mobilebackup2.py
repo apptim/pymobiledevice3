@@ -30,9 +30,13 @@ NP_SYNC_DID_FINISH = 'com.apple.itunes-mobdev.syncDidFinish'
 
 class Mobilebackup2Service(LockdownService):
     SERVICE_NAME = 'com.apple.mobilebackup2'
+    RSD_SERVICE_NAME = 'com.apple.mobilebackup2.shim.remote'
 
     def __init__(self, lockdown: LockdownClient):
-        super().__init__(lockdown, self.SERVICE_NAME, include_escrow_bag=True)
+        if isinstance(lockdown, LockdownClient):
+            super().__init__(lockdown, self.SERVICE_NAME, include_escrow_bag=True)
+        else:
+            super().__init__(lockdown, self.RSD_SERVICE_NAME, include_escrow_bag=True)
 
     @property
     def will_encrypt(self):
@@ -64,11 +68,13 @@ class Mobilebackup2Service(LockdownService):
 
                 # Initialize Status.plist file if doesn't exist.
                 status_path = device_directory / 'Status.plist'
+                current_date = datetime.now()
+                current_date = current_date.replace(tzinfo=None)
                 if full or not status_path.exists():
                     with open(device_directory / 'Status.plist', 'wb') as fd:
                         plistlib.dump({
                             'BackupState': 'new',
-                            'Date': datetime.utcnow(),
+                            'Date': current_date,
                             'IsFullBackup': full,
                             'Version': '3.3',
                             'SnapshotState': 'finished',

@@ -43,7 +43,6 @@ from pymobiledevice3.services.dvt.instruments.notifications import Notifications
 from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
 from pymobiledevice3.services.dvt.instruments.screenshot import Screenshot
 from pymobiledevice3.services.dvt.instruments.sysmontap import Sysmontap
-from pymobiledevice3.services.os_trace import OsTraceService
 from pymobiledevice3.services.remote_fetch_symbols import RemoteFetchSymbolsService
 from pymobiledevice3.services.remote_server import RemoteServer
 from pymobiledevice3.services.screenshot import ScreenshotService
@@ -53,6 +52,8 @@ from pymobiledevice3.tcp_forwarder import LockdownTcpForwarder
 BSC_SUBCLASS = 0x40c
 BSC_CLASS = 0x4
 VFS_AND_TRACES_SET = {0x03010000, 0x07ff0000}
+MatchedProcessByPid = namedtuple('MatchedProcess', 'name pid')
+
 logger = logging.getLogger(__name__)
 
 
@@ -135,23 +136,38 @@ def kill(service_provider: LockdownClient, pid):
         ProcessControl(dvt).kill(pid)
 
 
+def get_matching_processes(service_provider: LockdownServiceProvider, name: Optional[str] = None,
+                           bundle_identifier: Optional[str] = None) \
+        -> List[MatchedProcessByPid]:
+    result = []
+    with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
+        device_info = DeviceInfo(dvt)
+        for process in device_info.proclist():
+            current_name = process.get('name')
+            current_bundle_identifier = process.get('bundleIdentifier', '')
+            pid = process['pid']
+            if (bundle_identifier is not None and bundle_identifier in current_bundle_identifier) or \
+                    (name is not None and name in current_name):
+                result.append(MatchedProcessByPid(name=current_name, pid=pid))
+    return result
+
+
 @dvt.command('pkill', cls=Command)
 @click.argument('expression')
-def pkill(service_provider: LockdownClient, expression):
+@click.option('--bundle', is_flag=True, help='Treat given expression as a bundle-identifier instead of a process name')
+def pkill(service_provider: LockdownServiceProvider, expression: str, bundle: False) -> None:
     """ kill all processes containing `expression` in their name. """
-    processes = OsTraceService(lockdown=service_provider).get_pid_list()['Payload']
-    if len(processes) == 0:
-        # no point at trying to use DvtSecureSocketProxyService if no processes
-        # were matched
-        return
+    matching_name = expression if not bundle else None
+    matching_bundle_identifier = expression if bundle else None
+    matching_processes = get_matching_processes(service_provider, name=matching_name,
+                                                bundle_identifier=matching_bundle_identifier)
 
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         process_control = ProcessControl(dvt)
-        for pid, process_info in processes.items():
-            process_name = process_info['ProcessName']
-            if expression in process_name:
-                logger.info(f'killing {process_name}({pid})')
-                process_control.kill(pid)
+
+        for process in matching_processes:
+            logger.info(f'killing {process.name}({process.pid})')
+            process_control.kill(process.pid)
 
 
 @dvt.command('launch', cls=Command)
@@ -723,9 +739,7 @@ def simulate_location_set(service_provider: LockdownClient, latitude, longitude)
 @click.argument('filename', type=click.Path(exists=True, file_okay=True, dir_okay=False))
 @click.option('--disable-sleep', is_flag=True, default=False)
 def simulate_location_play(service_provider: LockdownClient, filename, disable_sleep):
-    """
-    play a .gpx file
-    """
+    """ play a .gpx file """
     DtSimulateLocation(service_provider).play_gpx_file(filename, disable_sleep=disable_sleep)
 
 
@@ -947,7 +961,7 @@ def dvt_simulate_location():
 def dvt_simulate_location_clear(service_provider: LockdownClient):
     """ clear simulated location """
     with DvtSecureSocketProxyService(service_provider) as dvt:
-        LocationSimulation(dvt).stop()
+        LocationSimulation(dvt).clear()
 
 
 @dvt_simulate_location.command('set', cls=Command)
@@ -960,7 +974,17 @@ def dvt_simulate_location_set(service_provider: LockdownClient, latitude, longit
         ... set -- 40.690008 -74.045843 for liberty island
     """
     with DvtSecureSocketProxyService(service_provider) as dvt:
-        LocationSimulation(dvt).simulate_location(latitude, longitude)
+        LocationSimulation(dvt).set(latitude, longitude)
+        wait_return()
+
+
+@dvt_simulate_location.command('play', cls=Command)
+@click.argument('filename', type=click.Path(exists=True, file_okay=True, dir_okay=False))
+@click.option('--disable-sleep', is_flag=True, default=False)
+def dvt_simulate_location_play(service_provider: LockdownClient, filename: str, disable_sleep: bool) -> None:
+    """ play a .gpx file """
+    with DvtSecureSocketProxyService(service_provider) as dvt:
+        LocationSimulation(dvt).play_gpx_file(filename, disable_sleep=disable_sleep)
         wait_return()
 
 

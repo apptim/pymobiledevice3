@@ -330,3 +330,13 @@ class AccessDeniedError(PyMobileDevice3Exception):
 
 class NoSuchBuildIdentityError(PyMobileDevice3Exception):
     pass
+
+
+class MobileActivationException(PyMobileDevice3Exception):
+    """ Mobile activation can not be done """
+    pass
+
+
+class NotEnoughDiskSpaceError(PyMobileDevice3Exception):
+    """ Computer does not have enough disk space for the intended operation """
+    pass

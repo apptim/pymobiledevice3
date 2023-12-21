@@ -142,6 +142,7 @@ Commands:
   syslog           syslog options
   usbmux           usbmuxd options
   webinspector     webinspector options
+  version          get installed package version
 ```
 
 ## Python API
@@ -161,7 +162,7 @@ for line in SyslogService(service_provider=lockdown).watch():
 
 # Or via remoted (iOS>=17)
 # First, create a tunnel using:
-#     $ sudo pymobiledevice3 remote start-quic-tunnel
+#     $ sudo pymobiledevice3 remote start-tunnel
 # You can of course implement it yourself by copying the same pieces of code from:
 #     https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/cli/remote.py#L68
 # Now you can simply connect to the created tunnel's host and port
@@ -182,7 +183,7 @@ the [RemoteXPC](misc/RemoteXPC.md) protocol. In order to communicate with the de
 first create [trusted tunnel](misc/RemoteXPC.md#trusted-tunnel) as follows:
 
 ```shell
-sudo python3 -m pymobiledevice3 remote start-quic-tunnel
+sudo python3 -m pymobiledevice3 remote start-tunnel
 ```
 
 The root permissions are required since this will create a new TUN/TAP device which is a high privilege operation.
@@ -227,13 +228,13 @@ Once the Tunneld Server is running, you can use it for RSD over the created QUIC
 To specify a device by its UDID:
 
 ```bash
-python pymobiledevice3 remote rsd-info --tunnel UDID
+python3 -m pymobiledevice3 remote rsd-info --tunnel UDID
 ```
 
 To let Tunneld automatically select a device (if only one is connected):
 
 ```bash
-python pymobiledevice3 remote rsd-info --tunnel ''
+python3 -m pymobiledevice3 remote rsd-info --tunnel ''
 ```
 
 If no UDID is specified and multiple devices are connected, a prompt will appear for device selection.

@@ -5,7 +5,7 @@ import struct
 import warnings
 from pathlib import Path
 
-from pymobiledevice3.exceptions import PyMobileDevice3Exception
+from pymobiledevice3.exceptions import NotEnoughDiskSpaceError, PyMobileDevice3Exception
 
 SIZE_FORMAT = '>I'
 CODE_FORMAT = '>B'
@@ -40,6 +40,7 @@ class DeviceLink:
             'DLMessageDownloadFiles': self.download_files,
             'DLContentsOfDirectory': self.contents_of_directory,
             'DLMessageCopyItem': self.copy_item,
+            'DLMessagePurgeDiskSpace': self.purge_disk_space
         }
 
     def dl_loop(self, progress_callback=lambda x: None):
@@ -105,10 +106,12 @@ class DeviceLink:
                 ftype = 'DLFileTypeDirectory'
             if file.is_file():
                 ftype = 'DLFileTypeRegular'
+            modifications_data = datetime.datetime.fromtimestamp(file.stat().st_mtime - APPLE_EPOCH)
+            modifications_data = modifications_data.replace(tzinfo=None)
             data[file.name] = {
                 'DLFileType': ftype,
                 'DLFileSize': file.stat().st_size,
-                'DLFileModificationDate': datetime.datetime.utcfromtimestamp(file.stat().st_mtime - APPLE_EPOCH)
+                'DLFileModificationDate': modifications_data
             }
         self.status_response(0, status_dict=data)
 
@@ -156,6 +159,9 @@ class DeviceLink:
         else:
             shutil.copy(src, dest)
         self.status_response(0)
+
+    def purge_disk_space(self, message) -> None:
+        raise NotEnoughDiskSpaceError()
 
     def remove_items(self, message):
         for path in message[1]:
