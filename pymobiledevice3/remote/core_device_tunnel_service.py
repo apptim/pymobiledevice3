@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from asyncio import CancelledError, StreamReader, StreamWriter
 from collections import namedtuple
 from contextlib import asynccontextmanager, suppress
+from os import chown, getenv
 from pathlib import Path
 from socket import AF_INET6, create_connection
 from ssl import VerifyMode
@@ -46,7 +47,8 @@ from sslpsk_pmd3.sslpsk import SSLPSKContext
 
 from pymobiledevice3.ca import make_cert
 from pymobiledevice3.exceptions import PyMobileDevice3Exception, UserDeniedPairingError
-from pymobiledevice3.pair_records import create_pairing_records_cache_folder, generate_host_id
+from pymobiledevice3.pair_records import PAIRING_RECORD_EXT, create_pairing_records_cache_folder, generate_host_id, \
+    get_remote_pairing_record_filename
 from pymobiledevice3.remote.common import TunnelProtocol
 from pymobiledevice3.remote.remote_service import RemoteService
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
@@ -396,6 +398,8 @@ class CoreDeviceTunnelService(RemoteService):
                 'private_key': self.ed25519_private_key.private_bytes_raw(),
                 'remote_unlock_host_key': self.remote_unlock_host_key
             }))
+        if getenv('SUDO_UID'):
+            chown(self.pair_record_path, int(getenv('SUDO_UID')), int(getenv('SUDO_GID')))
 
     @property
     def pair_record(self) -> Optional[Mapping]:
@@ -406,7 +410,8 @@ class CoreDeviceTunnelService(RemoteService):
     @property
     def pair_record_path(self) -> Path:
         pair_records_cache_directory = create_pairing_records_cache_folder()
-        return pair_records_cache_directory / f'remote_{self.handshake_info["peerDeviceInfo"]["identifier"]}.plist'
+        identifier = self.handshake_info['peerDeviceInfo']['identifier']
+        return pair_records_cache_directory / f'{get_remote_pairing_record_filename(identifier)}.{PAIRING_RECORD_EXT}'
 
     def _pair(self) -> None:
         pairing_consent_result = self._request_pair_consent()
