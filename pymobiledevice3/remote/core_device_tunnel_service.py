@@ -43,7 +43,7 @@ from qh3.quic.connection import QuicConnection
 from qh3.quic.events import ConnectionTerminated, DatagramFrameReceived, QuicEvent, StreamDataReceived
 from srptools import SRPClientSession, SRPContext
 from srptools.constants import PRIME_3072, PRIME_3072_GEN
-from sslpsk_pmd3.sslpsk import SSLPSKContext
+# from sslpsk_pmd3.sslpsk import SSLPSKContext
 
 from pymobiledevice3.ca import make_cert
 from pymobiledevice3.exceptions import PyMobileDevice3Exception, UserDeniedPairingError
@@ -374,22 +374,22 @@ class CoreDeviceTunnelService(RemoteService):
         port = parameters['port']
         sock = create_connection((host, port))
         set_keepalive(sock)
-        ctx = SSLPSKContext(ssl.PROTOCOL_TLSv1_2)
-        ctx.psk = self.encryption_key
-        ctx.set_ciphers('PSK')
-        reader, writer = await asyncio.open_connection(sock=sock, ssl=ctx, server_hostname='')
-        tunnel = RemotePairingTcpTunnel(reader, writer)
-        handshake_response = await tunnel.request_tunnel_establish()
-
-        tunnel.start_tunnel(handshake_response['clientParameters']['address'],
-                            handshake_response['clientParameters']['mtu'])
-
-        try:
-            yield TunnelResult(
-                tunnel.tun.name, handshake_response['serverAddress'], handshake_response['serverRSDPort'],
-                TunnelProtocol.TCP, tunnel)
-        finally:
-            await tunnel.stop_tunnel()
+        # ctx = SSLPSKContext(ssl.PROTOCOL_TLSv1_2)
+        # ctx.psk = self.encryption_key
+        # ctx.set_ciphers('PSK')
+        # reader, writer = await asyncio.open_connection(sock=sock, ssl=ctx, server_hostname='')
+        # tunnel = RemotePairingTcpTunnel(reader, writer)
+        # handshake_response = await tunnel.request_tunnel_establish()
+        #
+        # tunnel.start_tunnel(handshake_response['clientParameters']['address'],
+        #                     handshake_response['clientParameters']['mtu'])
+        #
+        # try:
+        #     yield TunnelResult(
+        #         tunnel.tun.name, handshake_response['serverAddress'], handshake_response['serverRSDPort'],
+        #         TunnelProtocol.TCP, tunnel)
+        # finally:
+        #     await tunnel.stop_tunnel()
 
     def save_pair_record(self) -> None:
         self.pair_record_path.write_bytes(
