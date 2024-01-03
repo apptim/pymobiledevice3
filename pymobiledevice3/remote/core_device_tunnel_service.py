@@ -327,7 +327,8 @@ class CoreDeviceTunnelService(RemoteService):
 
     @asynccontextmanager
     async def start_quic_tunnel(
-            self, max_idle_timeout: float = RemotePairingQuicTunnel.MAX_IDLE_TIMEOUT) -> AsyncGenerator[TunnelResult, None]:
+            self, secrets_log_file: Optional[TextIO] = None,
+            max_idle_timeout: float = RemotePairingQuicTunnel.MAX_IDLE_TIMEOUT) -> AsyncGenerator[TunnelResult, None]:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         parameters = self.create_quic_listener(private_key)
         cert = make_cert(private_key, private_key.public_key())
@@ -341,6 +342,7 @@ class CoreDeviceTunnelService(RemoteService):
             max_datagram_frame_size=RemotePairingQuicTunnel.MAX_QUIC_DATAGRAM,
             idle_timeout=max_idle_timeout
         )
+        configuration.secrets_log_file = secrets_log_file
 
         host = self.service.address[0]
         port = parameters['port']
@@ -724,7 +726,8 @@ async def start_tunnel(service_provider: RemoteServiceDiscoveryService, secrets:
     stop_remoted_if_required()
     with create_core_device_tunnel_service(service_provider, autopair=True) as service:
         if protocol == TunnelProtocol.QUIC:
-            async with service.start_quic_tunnel(max_idle_timeout=max_idle_timeout) as tunnel_result:
+            async with service.start_quic_tunnel(
+                    secrets_log_file=secrets, max_idle_timeout=max_idle_timeout) as tunnel_result:
                 resume_remoted_if_required()
                 yield tunnel_result
         elif protocol == TunnelProtocol.TCP:
