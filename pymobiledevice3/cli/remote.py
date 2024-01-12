@@ -192,7 +192,7 @@ def select_device(udid: str) -> RemoteServiceDiscoveryService:
 @click.option('-p', '--protocol', type=click.Choice([e.value for e in TunnelProtocol]),
               default=TunnelProtocol.QUIC.value)
 @click.option('--rsd-destination', help='Location to save created tunnel addresses')
-@click.option('--close-tunnel-signal-file', help='Location to save tunnel closure signal file')
+@click.option('--close-tunnels-signal-file', help='Location to save tunnel closure signal file')
 @sudo_required
 def cli_start_tunnel(udid: str, secrets: TextIO, script_mode: bool, max_idle_timeout: float, protocol: str,
                      rsd_destination: str, close_tunnels_signal_file: str):
