@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager, suppress
 from typing import Dict, Tuple
 
 import fastapi
-import ifaddr.netifaces
+import ifaddr
 import uvicorn
 import zeroconf
 from fastapi import FastAPI
