@@ -97,8 +97,8 @@ def rsd_info(service_provider: RemoteServiceDiscoveryService, color: bool):
 
 
 async def tunnel_task(
-        service_provider: RemoteServiceDiscoveryService, secrets: TextIO,
-        script_mode: bool = False, max_idle_timeout: float = MAX_IDLE_TIMEOUT,
+        service_provider: RemoteServiceDiscoveryService, secrets: TextIO = None,
+        script_mode: bool = True, max_idle_timeout: float = MAX_IDLE_TIMEOUT,
         protocol: TunnelProtocol = TunnelProtocol.QUIC, rsd_destination: str = '',
         close_tunnels_signal_file: str = '') -> None:
     if start_tunnel is None:
@@ -182,11 +182,9 @@ def select_device(udid: str) -> RemoteServiceDiscoveryService:
     return rsd
 
 
-async def tunnel_task_concurrently(rsd, secrets, script_mode, max_idle_timeout, protocol, tunnels_to_create,
-                                   rsd_destination, close_tunnels_signal_file):
-    tasks = [tunnel_task(rsd, secrets, script_mode, max_idle_timeout=max_idle_timeout, protocol=protocol,
-                         rsd_destination=rsd_destination, close_tunnels_signal_file=close_tunnels_signal_file) for _ in
-             range(tunnels_to_create)]
+async def tunnel_task_concurrently(rsd, tunnels_to_create, rsd_destination, close_tunnels_signal_file):
+    tasks = [tunnel_task(rsd, rsd_destination=rsd_destination, close_tunnels_signal_file=close_tunnels_signal_file)
+             for _ in range(tunnels_to_create)]
     await asyncio.gather(*tasks)
     if close_tunnels_signal_file:
         logging.info(f"Removing close tunnels signal file...")
@@ -202,19 +200,18 @@ async def tunnel_task_concurrently(rsd, secrets, script_mode, max_idle_timeout, 
               help='Maximum QUIC idle time (ping interval)')
 @click.option('-p', '--protocol', type=click.Choice([e.value for e in TunnelProtocol]),
               default=TunnelProtocol.QUIC.value)
-@click.option('--tunnels-to-create', type=click.INT, help='Amount of tunnels to create')
 @click.option('--rsd-destination', help='Location to save created tunnel addresses')
 @click.option('--close-tunnels-signal-file', help='Location to save tunnel closure signal file')
 @sudo_required
-def cli_start_tunnel(udid: str, secrets: TextIO, script_mode: bool, max_idle_timeout: float, protocol: str,
-                     tunnels_to_create: int, rsd_destination: str, close_tunnels_signal_file: str):
+def cli_start_tunnel(udid: str, secrets: TextIO, script_mode: bool, max_idle_timeout: float, protocol: str, rsd_destination: str, close_tunnels_signal_file: str):
     """ start quic tunnel """
     protocol = TunnelProtocol(protocol)
     if not verify_tunnel_imports():
         return
     rsd = select_device(udid)
-    asyncio.run(tunnel_task_concurrently(rsd, secrets, script_mode, max_idle_timeout, protocol, tunnels_to_create,
-                                         rsd_destination, close_tunnels_signal_file), debug=True)
+    asyncio.run(tunnel_task(rsd, secrets, script_mode, max_idle_timeout=max_idle_timeout, protocol=protocol,
+                            rsd_destination=rsd_destination, close_tunnels_signal_file=close_tunnels_signal_file),
+                debug=True)
 
 
 @remote_cli.command('delete-pair')
