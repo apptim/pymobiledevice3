@@ -202,7 +202,7 @@ async def tunnel_task_concurrently(rsd, secrets, script_mode, max_idle_timeout, 
               help='Maximum QUIC idle time (ping interval)')
 @click.option('-p', '--protocol', type=click.Choice([e.value for e in TunnelProtocol]),
               default=TunnelProtocol.QUIC.value)
-@click.option('--tunnels-to-create', help='Amount of tunnels to create')
+@click.option('--tunnels-to-create', type=click.INT, help='Amount of tunnels to create')
 @click.option('--rsd-destination', help='Location to save created tunnel addresses')
 @click.option('--close-tunnels-signal-file', help='Location to save tunnel closure signal file')
 @sudo_required
