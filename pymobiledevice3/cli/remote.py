@@ -99,23 +99,35 @@ def rsd_info(service_provider: RemoteServiceDiscoveryService, color: bool):
 async def tunnel_task(
         service_provider: RemoteServiceDiscoveryService, secrets: TextIO = None,
         script_mode: bool = True, max_idle_timeout: float = MAX_IDLE_TIMEOUT,
-        protocol: TunnelProtocol = TunnelProtocol.QUIC, rsd_destination: str = '',
+        protocol: TunnelProtocol = TunnelProtocol.QUIC, tunnels_addresses_file: str = '',
+        creating_tunnels_signal_file: str = '',
         close_tunnels_signal_file: str = '') -> None:
     if start_tunnel is None:
         raise NotImplementedError('failed to start the QUIC tunnel on your platform')
 
+    if creating_tunnels_signal_file:
+        with open(creating_tunnels_signal_file, "w"):
+            pass
+
     async with start_tunnel(service_provider, secrets=secrets, max_idle_timeout=max_idle_timeout,
                             protocol=protocol) as tunnel_result:
         logger.info('tunnel created')
+
+        if creating_tunnels_signal_file and os.path.exists(creating_tunnels_signal_file):
+            os.remove(creating_tunnels_signal_file)
+
         if script_mode:
             print(f'{tunnel_result.address} {tunnel_result.port}')
-            if rsd_destination:
+            if tunnels_addresses_file:
 
-                if os.path.exists(rsd_destination):
-                    with open(rsd_destination, "r") as json_file:
+                if os.path.exists(tunnels_addresses_file):
+                    with open(tunnels_addresses_file, "r") as json_file:
                         existing_data = json.load(json_file)
                 else:
-                    existing_data = []
+                    existing_data = {
+                        "udid": service_provider.udid,
+                        "addresses": []
+                    }
 
                 new_data = [{
                     "address": tunnel_result.address,
@@ -123,9 +135,9 @@ async def tunnel_task(
                     "available": True
                 }]
 
-                existing_data.extend(new_data)
+                existing_data["addresses"].extend(new_data)
 
-                with open(rsd_destination, "w") as json_file:
+                with open(tunnels_addresses_file, "w") as json_file:
                     json.dump(existing_data, json_file, indent=4)
         else:
             if secrets is not None:
@@ -182,8 +194,9 @@ def select_device(udid: str) -> RemoteServiceDiscoveryService:
     return rsd
 
 
-async def tunnel_task_concurrently(rsd, tunnels_to_create, rsd_destination, close_tunnels_signal_file):
-    tasks = [tunnel_task(rsd, rsd_destination=rsd_destination, close_tunnels_signal_file=close_tunnels_signal_file)
+async def tunnel_task_concurrently(rsd, tunnels_to_create, tunnels_addresses_file, creating_tunnels_signal_file, close_tunnels_signal_file):
+    tasks = [tunnel_task(rsd, tunnels_addresses_file=tunnels_addresses_file, creating_tunnels_signal_file=creating_tunnels_signal_file,
+                         close_tunnels_signal_file=close_tunnels_signal_file)
              for _ in range(tunnels_to_create)]
     await asyncio.gather(*tasks)
     if close_tunnels_signal_file:
