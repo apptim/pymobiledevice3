@@ -124,10 +124,7 @@ async def tunnel_task(
                     with open(tunnels_addresses_file, "r") as json_file:
                         existing_data = json.load(json_file)
                 else:
-                    existing_data = {
-                        "udid": service_provider.udid,
-                        "addresses": []
-                    }
+                    existing_data = []
 
                 new_data = [{
                     "address": tunnel_result.address,
@@ -135,7 +132,7 @@ async def tunnel_task(
                     "available": True
                 }]
 
-                existing_data["addresses"].extend(new_data)
+                existing_data.extend(new_data)
 
                 with open(tunnels_addresses_file, "w") as json_file:
                     json.dump(existing_data, json_file, indent=4)
@@ -166,6 +163,8 @@ async def tunnel_task(
         else:
             sys.stdout.flush()
             await tunnel_result.client.wait_closed()
+            if tunnels_addresses_file and os.path.exists(tunnels_addresses_file):
+                os.remove(tunnels_addresses_file)
             logger.info('tunnel was closed')
 
 
