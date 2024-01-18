@@ -114,6 +114,7 @@ async def tunnel_task(
         logger.info('tunnel created')
 
         if creating_tunnels_signal_file and os.path.exists(creating_tunnels_signal_file):
+            logger.info('Removing creating tunnels signal file...')
             os.remove(creating_tunnels_signal_file)
 
         if script_mode:
@@ -164,6 +165,7 @@ async def tunnel_task(
             sys.stdout.flush()
             await tunnel_result.client.wait_closed()
             if tunnels_addresses_file and os.path.exists(tunnels_addresses_file):
+                logger.info('Removing tunnels addresses file...')
                 os.remove(tunnels_addresses_file)
             logger.info('tunnel was closed')
 
@@ -198,8 +200,8 @@ async def tunnel_task_concurrently(rsd, tunnels_to_create, tunnels_addresses_fil
                          close_tunnels_signal_file=close_tunnels_signal_file)
              for _ in range(tunnels_to_create)]
     await asyncio.gather(*tasks)
-    if close_tunnels_signal_file:
-        logging.info(f"Removing close tunnels signal file...")
+    if close_tunnels_signal_file and os.path.exists(close_tunnels_signal_file):
+        logger.info('Removing close tunnels signal file...')
         os.remove(close_tunnels_signal_file)
 
 
