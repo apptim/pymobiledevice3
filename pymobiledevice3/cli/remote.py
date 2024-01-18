@@ -106,7 +106,7 @@ async def tunnel_task(
         raise NotImplementedError('failed to start the QUIC tunnel on your platform')
 
     if creating_tunnels_signal_file:
-        with open(creating_tunnels_signal_file, "w"):
+        with open(creating_tunnels_signal_file, "w") as signal_file:
             pass
 
     async with start_tunnel(service_provider, secrets=secrets, max_idle_timeout=max_idle_timeout,
