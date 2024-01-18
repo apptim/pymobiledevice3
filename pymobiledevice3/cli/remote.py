@@ -213,18 +213,18 @@ async def tunnel_task_concurrently(rsd, tunnels_to_create, tunnels_addresses_fil
               help='Maximum QUIC idle time (ping interval)')
 @click.option('-p', '--protocol', type=click.Choice([e.value for e in TunnelProtocol]),
               default=TunnelProtocol.QUIC.value)
-@click.option('--rsd-destination', help='Location to save created tunnel addresses')
+@click.option('--tunnels-addresses-file', help='Location to save created tunnel addresses')
 @click.option('--close-tunnels-signal-file', help='Location to save tunnel closure signal file')
 @sudo_required
-def cli_start_tunnel(udid: str, secrets: TextIO, script_mode: bool, max_idle_timeout: float, protocol: str, rsd_destination: str, close_tunnels_signal_file: str):
+def cli_start_tunnel(udid: str, secrets: TextIO, script_mode: bool, max_idle_timeout: float, protocol: str, tunnels_addresses_file: str, close_tunnels_signal_file: str):
     """ start quic tunnel """
     protocol = TunnelProtocol(protocol)
     if not verify_tunnel_imports():
         return
     rsd = select_device(udid)
     asyncio.run(tunnel_task(rsd, secrets, script_mode, max_idle_timeout=max_idle_timeout, protocol=protocol,
-                            rsd_destination=rsd_destination, close_tunnels_signal_file=close_tunnels_signal_file),
-                debug=True)
+                            tunnels_addresses_file=tunnels_addresses_file,
+                            close_tunnels_signal_file=close_tunnels_signal_file), debug=True)
 
 
 @remote_cli.command('delete-pair')
