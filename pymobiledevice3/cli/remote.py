@@ -164,7 +164,7 @@ async def tunnel_task(
         else:
             sys.stdout.flush()
             await tunnel_result.client.wait_closed()
-            if tunnels_addresses_file and os.path.exists(tunnels_addresses_file):
+            if tunnels_addresses_file:
                 logger.info('Removing tunnels addresses file...')
                 os.remove(tunnels_addresses_file)
             logger.info('tunnel was closed')
