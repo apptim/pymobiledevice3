@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import os
 import sys
 import tempfile
 from functools import partial
@@ -95,17 +97,46 @@ def rsd_info(service_provider: RemoteServiceDiscoveryService, color: bool):
 
 
 async def tunnel_task(
-        service_provider: RemoteServiceDiscoveryService, secrets: TextIO,
-        script_mode: bool = False, max_idle_timeout: float = MAX_IDLE_TIMEOUT,
-        protocol: TunnelProtocol = TunnelProtocol.QUIC) -> None:
+        service_provider: RemoteServiceDiscoveryService, secrets: TextIO = None,
+        script_mode: bool = True, max_idle_timeout: float = MAX_IDLE_TIMEOUT,
+        protocol: TunnelProtocol = TunnelProtocol.QUIC, tunnels_addresses_file: str = '',
+        creating_tunnels_signal_file: str = '',
+        close_tunnels_signal_file: str = '') -> None:
     if start_tunnel is None:
         raise NotImplementedError('failed to start the QUIC tunnel on your platform')
+
+    if creating_tunnels_signal_file:
+        with open(creating_tunnels_signal_file, "w") as signal_file:
+            pass
 
     async with start_tunnel(service_provider, secrets=secrets, max_idle_timeout=max_idle_timeout,
                             protocol=protocol) as tunnel_result:
         logger.info('tunnel created')
+
+        if creating_tunnels_signal_file and os.path.exists(creating_tunnels_signal_file):
+            logger.info('Removing creating tunnels signal file...')
+            os.remove(creating_tunnels_signal_file)
+
         if script_mode:
             print(f'{tunnel_result.address} {tunnel_result.port}')
+            if tunnels_addresses_file:
+
+                if os.path.exists(tunnels_addresses_file):
+                    with open(tunnels_addresses_file, "r") as json_file:
+                        existing_data = json.load(json_file)
+                else:
+                    existing_data = []
+
+                new_data = [{
+                    "address": tunnel_result.address,
+                    "port": tunnel_result.port,
+                    "available": True
+                }]
+
+                existing_data.extend(new_data)
+
+                with open(tunnels_addresses_file, "w") as json_file:
+                    json.dump(existing_data, json_file, indent=4)
         else:
             if secrets is not None:
                 print(click.style('Secrets: ', bold=True, fg='magenta') +
@@ -126,9 +157,17 @@ async def tunnel_task(
                   click.style(tunnel_result.port, bold=True, fg='white'))
             print(click.style('Use the follow connection option:\n', bold=True, fg='yellow') +
                   click.style(f'--rsd {tunnel_result.address} {tunnel_result.port}', bold=True, fg='cyan'))
-        sys.stdout.flush()
-        await tunnel_result.client.wait_closed()
-        logger.info('tunnel was closed')
+        if close_tunnels_signal_file:
+            while not os.path.exists(close_tunnels_signal_file):
+                # wait signal file existence while the asyncio tasks execute
+                await asyncio.sleep(.5)
+        else:
+            sys.stdout.flush()
+            await tunnel_result.client.wait_closed()
+            if tunnels_addresses_file:
+                logger.info('Removing tunnels addresses file...')
+                os.remove(tunnels_addresses_file)
+            logger.info('tunnel was closed')
 
 
 def select_device(udid: str) -> RemoteServiceDiscoveryService:
@@ -156,6 +195,16 @@ def select_device(udid: str) -> RemoteServiceDiscoveryService:
     return rsd
 
 
+async def tunnel_task_concurrently(rsd, tunnels_to_create, tunnels_addresses_file, creating_tunnels_signal_file, close_tunnels_signal_file):
+    tasks = [tunnel_task(rsd, tunnels_addresses_file=tunnels_addresses_file, creating_tunnels_signal_file=creating_tunnels_signal_file,
+                         close_tunnels_signal_file=close_tunnels_signal_file)
+             for _ in range(tunnels_to_create)]
+    await asyncio.gather(*tasks)
+    if close_tunnels_signal_file and os.path.exists(close_tunnels_signal_file):
+        logger.info('Removing close tunnels signal file...')
+        os.remove(close_tunnels_signal_file)
+
+
 @remote_cli.command('start-tunnel')
 @click.option('--udid', help='UDID for a specific device to look for')
 @click.option('--secrets', type=click.File('wt'), help='TLS keyfile for decrypting with Wireshark')
@@ -165,15 +214,18 @@ def select_device(udid: str) -> RemoteServiceDiscoveryService:
               help='Maximum QUIC idle time (ping interval)')
 @click.option('-p', '--protocol', type=click.Choice([e.value for e in TunnelProtocol]),
               default=TunnelProtocol.QUIC.value)
+@click.option('--tunnels-addresses-file', help='Location to save created tunnel addresses')
+@click.option('--close-tunnels-signal-file', help='Location to save tunnel closure signal file')
 @sudo_required
-def cli_start_tunnel(udid: str, secrets: TextIO, script_mode: bool, max_idle_timeout: float, protocol: str):
+def cli_start_tunnel(udid: str, secrets: TextIO, script_mode: bool, max_idle_timeout: float, protocol: str, tunnels_addresses_file: str, close_tunnels_signal_file: str):
     """ start quic tunnel """
     protocol = TunnelProtocol(protocol)
     if not verify_tunnel_imports():
         return
     rsd = select_device(udid)
-    asyncio.run(tunnel_task(rsd, secrets, script_mode, max_idle_timeout=max_idle_timeout, protocol=protocol),
-                debug=True)
+    asyncio.run(tunnel_task(rsd, secrets, script_mode, max_idle_timeout=max_idle_timeout, protocol=protocol,
+                            tunnels_addresses_file=tunnels_addresses_file,
+                            close_tunnels_signal_file=close_tunnels_signal_file), debug=True)
 
 
 @remote_cli.command('delete-pair')

@@ -7,7 +7,8 @@ try:
     from pymobiledevice3.remote.core_device_tunnel_service import RemotePairingQuicTunnel, start_tunnel
 
     MAX_IDLE_TIMEOUT = RemotePairingQuicTunnel.MAX_IDLE_TIMEOUT
-except ImportError:
+except ImportError as ie:
+    logger.error(f'Something happened while importing start_tunnel {ie}')
     start_tunnel = None
     MAX_IDLE_TIMEOUT = None
 
