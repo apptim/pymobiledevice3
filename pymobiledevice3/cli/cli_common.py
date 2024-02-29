@@ -2,7 +2,6 @@ import datetime
 import json
 import logging
 import os
-import signal
 import sys
 import uuid
 from typing import Callable, List, Mapping, Optional, Tuple
@@ -23,6 +22,7 @@ from pymobiledevice3.remote.utils import get_tunneld_devices
 from pymobiledevice3.usbmux import select_devices_by_connection_type
 
 USBMUX_OPTION_HELP = 'usbmuxd listener address (in the form of either /path/to/unix/socket OR HOST:PORT'
+COLORED_OUTPUT = True
 
 
 class RSDOption(Option):
@@ -38,7 +38,8 @@ class RSDOption(Option):
         super().__init__(*args, **kwargs)
 
     def handle_parse_result(self, ctx, opts, args):
-        if len(opts) == 0 and isinstance(ctx.command, RSDCommand) and not (isinstance(ctx.command, Command)):
+        if (isinstance(ctx.command, RSDCommand) and not (isinstance(ctx.command, Command)) and
+                ('rsd_service_provider_using_tunneld' not in opts) and ('rsd_service_provider_manually' not in opts)):
             raise UsageError('Illegal usage: At least one is required [--rsd | --tunnel]')
         if self.mutually_exclusive.intersection(opts) and self.name in opts:
             raise UsageError(
@@ -66,14 +67,18 @@ def default_json_encoder(obj):
     raise TypeError()
 
 
-def print_json(buf, colored=True, default=default_json_encoder):
+def print_json(buf, colored: Optional[bool] = None, default=default_json_encoder):
+    if colored is None:
+        colored = user_requested_colored_output()
     formatted_json = json.dumps(buf, sort_keys=True, indent=4, default=default)
     if colored:
         colorful_json = highlight(formatted_json, lexers.JsonLexer(),
                                   formatters.TerminalTrueColorFormatter(style='stata-dark'))
         print(colorful_json)
+        return colorful_json
     else:
         print(formatted_json)
+        return formatted_json
 
 
 def print_hex(data, colored=True):
@@ -88,21 +93,54 @@ def set_verbosity(ctx, param, value):
     coloredlogs.set_level(logging.INFO - (value * 10))
 
 
+def set_color_flag(ctx, param, value) -> None:
+    global COLORED_OUTPUT
+    COLORED_OUTPUT = value
+
+
+def user_requested_colored_output() -> bool:
+    return COLORED_OUTPUT
+
+
 def get_last_used_terminal_formatting(buf: str) -> str:
     return '\x1b' + buf.rsplit('\x1b', 1)[1].split('m')[0] + 'm'
 
 
-def wait_return():
-    print("Press Ctrl+C to send a SIGINT or use 'kill' command to send a SIGTERM")
-    signal.sigwait([signal.SIGINT, signal.SIGTERM])
+def wait_return() -> None:
+    if sys.platform != 'win32':
+        import signal
+        print("Press Ctrl+C to send a SIGINT or use 'kill' command to send a SIGTERM")
+        signal.sigwait([signal.SIGINT, signal.SIGTERM])
+    else:
+        input('Press ENTER to exit>')
 
 
 UDID_ENV_VAR = 'PYMOBILEDEVICE3_UDID'
 
 
+def is_admin_user() -> bool:
+    """ Check if the current OS user is an Administrator or root.
+
+    See: https://github.com/Preston-Landers/pyuac/blob/master/pyuac/admin.py
+
+    :return: True if the current user is an 'Administrator', otherwise False.
+    """
+    if os.name == 'nt':
+        import win32security
+
+        try:
+            admin_sid = win32security.CreateWellKnownSid(win32security.WinBuiltinAdministratorsSid, None)
+            return win32security.CheckTokenMembership(None, admin_sid)
+        except Exception:
+            return False
+    else:
+        # Check for root on Posix
+        return os.getuid() == 0
+
+
 def sudo_required(func):
     def wrapper(*args, **kwargs):
-        if sys.platform != 'win32' and os.geteuid() != 0:
+        if not is_admin_user():
             raise AccessDeniedError()
         else:
             func(*args, **kwargs)
@@ -141,12 +179,22 @@ class BaseCommand(click.Command):
         super().__init__(*args, **kwargs)
         self.params[:0] = [
             click.Option(('verbosity', '-v', '--verbose'), count=True, callback=set_verbosity, expose_value=False),
+            click.Option(('color', '--color/--no-color'), default=True, callback=set_color_flag, is_flag=True,
+                         expose_value=False, help='colorize output'),
+        ]
+
+
+class BaseServiceProviderCommand(BaseCommand):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.params[:0] = [
+            click.Option(('verbosity', '-v', '--verbose'), count=True, callback=set_verbosity, expose_value=False),
         ]
         self.service_provider = None
         self.callback = choose_service_provider(self.callback)
 
 
-class LockdownCommand(BaseCommand):
+class LockdownCommand(BaseServiceProviderCommand):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.usbmux_address = None
@@ -182,7 +230,7 @@ class LockdownCommand(BaseCommand):
             [create_using_usbmux(serial=device.serial, usbmux_address=self.usbmux_address) for device in devices])
 
 
-class RSDCommand(BaseCommand):
+class RSDCommand(BaseServiceProviderCommand):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.params[:0] = [

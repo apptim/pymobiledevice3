@@ -14,7 +14,11 @@ from abc import ABC, abstractmethod
 from asyncio import CancelledError, StreamReader, StreamWriter
 from collections import namedtuple
 from contextlib import asynccontextmanager, suppress
-from os import chown, getenv
+
+if sys.platform != 'win32':
+    from os import chown
+
+from os import getenv
 from pathlib import Path
 from socket import AF_INET6, create_connection
 from ssl import VerifyMode
@@ -33,7 +37,12 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from opack import dumps
-from pytun_pmd3 import TunTapDevice
+
+if sys.platform != 'win32':
+    from pytun_pmd3 import TunTapDevice
+else:
+    from pywintunx_pmd3 import TunTapDevice, set_logger
+
 from qh3.asyncio import QuicConnectionProtocol
 from qh3.asyncio.client import connect as aioquic_connect
 from qh3.asyncio.protocol import QuicStreamHandler
@@ -43,7 +52,11 @@ from qh3.quic.connection import QuicConnection
 from qh3.quic.events import ConnectionTerminated, DatagramFrameReceived, QuicEvent, StreamDataReceived
 from srptools import SRPClientSession, SRPContext
 from srptools.constants import PRIME_3072, PRIME_3072_GEN
-from sslpsk_pmd3.sslpsk import SSLPSKContext
+
+try:
+    from sslpsk_pmd3.sslpsk import SSLPSKContext
+except ImportError:
+    SSLPSKContext = None
 
 from pymobiledevice3.ca import make_cert
 from pymobiledevice3.exceptions import PyMobileDevice3Exception, UserDeniedPairingError
@@ -60,6 +73,12 @@ if sys.platform == 'darwin':
     LOOKBACK_HEADER = struct.pack('>I', AF_INET6)
 else:
     LOOKBACK_HEADER = b'\x00\x00\x86\xdd'
+
+if sys.platform == 'win32':
+    def wintun_logger(level: int, timestamp: int, message: str) -> None:
+        logging.getLogger('wintun').info(message)
+
+    set_logger(wintun_logger)
 
 IPV6_HEADER_SIZE = 40
 UDP_HEADER_SIZE = 8
@@ -140,12 +159,18 @@ class RemotePairingTunnel(ABC):
     @asyncio_print_traceback
     async def tun_read_task(self) -> None:
         read_size = self.tun.mtu + len(LOOKBACK_HEADER)
-        async with aiofiles.open(self.tun.fileno(), 'rb', opener=lambda path, flags: path, buffering=0) as f:
+        if sys.platform != 'win32':
+            async with aiofiles.open(self.tun.fileno(), 'rb', opener=lambda path, flags: path, buffering=0) as f:
+                while True:
+                    packet = await f.read(read_size)
+                    assert packet.startswith(LOOKBACK_HEADER)
+                    packet = packet[len(LOOKBACK_HEADER):]
+                    await self.send_packet_to_device(packet)
+        else:
             while True:
-                packet = await f.read(read_size)
-                assert packet.startswith(LOOKBACK_HEADER)
-                packet = packet[len(LOOKBACK_HEADER):]
-                await self.send_packet_to_device(packet)
+                packet = await asyncio.get_running_loop().run_in_executor(None, self.tun.read)
+                if packet:
+                    await self.send_packet_to_device(packet)
 
     def start_tunnel(self, address: str, mtu: int) -> None:
         self.tun = TunTapDevice()
@@ -398,7 +423,7 @@ class CoreDeviceTunnelService(RemoteService):
                 'private_key': self.ed25519_private_key.private_bytes_raw(),
                 'remote_unlock_host_key': self.remote_unlock_host_key
             }))
-        if getenv('SUDO_UID'):
+        if getenv('SUDO_UID') and sys.platform != 'win32':
             chown(self.pair_record_path, int(getenv('SUDO_UID')), int(getenv('SUDO_GID')))
 
     @property

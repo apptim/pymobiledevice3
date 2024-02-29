@@ -9,7 +9,8 @@ from typing import List, TextIO
 
 import click
 
-from pymobiledevice3.cli.cli_common import RSDCommand, print_json, prompt_device_list, sudo_required
+from pymobiledevice3.cli.cli_common import BaseCommand, RSDCommand, print_json, prompt_device_list, sudo_required, \
+    user_requested_colored_output
 from pymobiledevice3.common import get_home_folder
 from pymobiledevice3.exceptions import NoDeviceConnectedError
 from pymobiledevice3.pair_records import PAIRING_RECORD_EXT, get_remote_pairing_record_filename
@@ -21,6 +22,12 @@ from pymobiledevice3.remote.utils import TUNNELD_DEFAULT_ADDRESS, stop_remoted
 from pymobiledevice3.tunneld import TunneldRunner
 
 logger = logging.getLogger(__name__)
+
+
+def install_driver_if_required() -> None:
+    if sys.platform == 'win32':
+        import pywintunx_pmd3
+        pywintunx_pmd3.install_wetest_driver()
 
 
 def get_device_list() -> List[RemoteServiceDiscoveryService]:
@@ -48,7 +55,7 @@ def remote_cli():
     pass
 
 
-@remote_cli.command('tunneld')
+@remote_cli.command('tunneld', cls=BaseCommand)
 @click.option('--host', default=TUNNELD_DEFAULT_ADDRESS[0])
 @click.option('--port', type=click.INT, default=TUNNELD_DEFAULT_ADDRESS[1])
 @click.option('-d', '--daemonize', is_flag=True)
@@ -59,6 +66,7 @@ def cli_tunneld(host: str, port: int, daemonize: bool, protocol: str):
     """ Start Tunneld service for remote tunneling """
     if not verify_tunnel_imports():
         return
+    install_driver_if_required()
     protocol = TunnelProtocol(protocol)
     tunneld_runner = partial(TunneldRunner.create, host, port, protocol)
     if daemonize:
@@ -75,10 +83,10 @@ def cli_tunneld(host: str, port: int, daemonize: bool, protocol: str):
         tunneld_runner()
 
 
-@remote_cli.command('browse')
-@click.option('--color/--no-color', default=True)
-def browse(color: bool):
+@remote_cli.command('browse', cls=BaseCommand)
+def browse():
     """ browse devices using bonjour """
+    install_driver_if_required()
     devices = []
     for rsd in get_device_list():
         devices.append({'address': rsd.service.address[0],
@@ -86,14 +94,14 @@ def browse(color: bool):
                         'UniqueDeviceID': rsd.peer_info['Properties']['UniqueDeviceID'],
                         'ProductType': rsd.peer_info['Properties']['ProductType'],
                         'OSVersion': rsd.peer_info['Properties']['OSVersion']})
-    print_json(devices, colored=color)
+    print_json(devices)
 
 
 @remote_cli.command('rsd-info', cls=RSDCommand)
-@click.option('--color/--no-color', default=True)
-def rsd_info(service_provider: RemoteServiceDiscoveryService, color: bool):
+def rsd_info(service_provider: RemoteServiceDiscoveryService):
     """ show info extracted from RSD peer """
-    print_json(service_provider.peer_info, colored=color)
+    install_driver_if_required()
+    print_json(service_provider.peer_info)
 
 
 async def tunnel_task(
@@ -219,6 +227,7 @@ async def tunnel_task_concurrently(rsd, tunnels_to_create, tunnels_addresses_fil
 @sudo_required
 def cli_start_tunnel(udid: str, secrets: TextIO, script_mode: bool, max_idle_timeout: float, protocol: str, tunnels_addresses_file: str, close_tunnels_signal_file: str):
     """ start quic tunnel """
+    install_driver_if_required()
     protocol = TunnelProtocol(protocol)
     if not verify_tunnel_imports():
         return
@@ -228,7 +237,7 @@ def cli_start_tunnel(udid: str, secrets: TextIO, script_mode: bool, max_idle_tim
                             close_tunnels_signal_file=close_tunnels_signal_file), debug=True)
 
 
-@remote_cli.command('delete-pair')
+@remote_cli.command('delete-pair', cls=BaseCommand)
 @click.option('--udid', help='UDID for a specific device to delete the pairing record of')
 @sudo_required
 def cli_delete_pair(udid: str):
@@ -242,5 +251,6 @@ def cli_delete_pair(udid: str):
 @click.argument('service_name')
 def cli_service(service_provider: RemoteServiceDiscoveryService, service_name: str):
     """ start an ipython shell for interacting with given service """
+    install_driver_if_required()
     with service_provider.start_remote_service(service_name) as service:
         service.shell()

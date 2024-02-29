@@ -1,11 +1,12 @@
 import logging
+import sys
 import traceback
 
 import click
 import coloredlogs
 
-from pymobiledevice3.exceptions import AccessDeniedError, ConnectionFailedToUsbmuxdError, DeveloperModeError, \
-    DeveloperModeIsNotEnabledError, DeviceHasPasscodeSetError, DeviceNotFoundError, InternalError, \
+from pymobiledevice3.exceptions import AccessDeniedError, ConnectionFailedToUsbmuxdError, DeprecationError, \
+    DeveloperModeError, DeveloperModeIsNotEnabledError, DeviceHasPasscodeSetError, DeviceNotFoundError, InternalError, \
     InvalidServiceError, MessageNotSupportedError, MissingValueError, NoDeviceConnectedError, NoDeviceSelectedError, \
     NotEnoughDiskSpaceError, NotPairedError, PairingDialogResponsePendingError, PasswordRequiredError, \
     RSDRequiredError, SetProhibitedError, TunneldConnectionError, UserDeniedPairingError
@@ -64,7 +65,6 @@ CLI_GROUPS = {
     'remote': 'remote',
     'restore': 'restore',
     'springboard': 'springboard',
-    'status': 'status',
     'syslog': 'syslog',
     'usbmux': 'usbmux',
     'webinspector': 'webinspector',
@@ -79,10 +79,7 @@ class Pmd3Cli(click.Group):
     def get_command(self, ctx, name):
         if name not in CLI_GROUPS.keys():
             ctx.fail(f'No such command {name!r}.')
-        try:
-            mod = __import__(f'pymobiledevice3.cli.{CLI_GROUPS[name]}', None, None, ['cli'])
-        except ImportError:
-            return
+        mod = __import__(f'pymobiledevice3.cli.{CLI_GROUPS[name]}', None, None, ['cli'])
         command = mod.cli.get_command(ctx, name)
         # Some cli groups have different names than the index
         if not command:
@@ -134,7 +131,10 @@ def main() -> None:
     except PasswordRequiredError:
         logger.error('Device is password protected. Please unlock and retry')
     except AccessDeniedError:
-        logger.error('This command requires root privileges. Consider retrying with "sudo".')
+        if sys.platform == 'win32':
+            logger.error('This command requires admin privileges. Consider retrying with "run-as administrator".')
+        else:
+            logger.error('This command requires root privileges. Consider retrying with "sudo".')
     except BrokenPipeError:
         traceback.print_exc()
     except TunneldConnectionError:
@@ -148,6 +148,8 @@ def main() -> None:
     except RSDRequiredError:
         logger.error('The requested operation requires an RSD instance. For more information see:\n'
                      'https://github.com/doronz88/pymobiledevice3?tab=readme-ov-file#working-with-developer-tools-ios--170')
+    except DeprecationError:
+        logger.error('failed to query MobileGestalt, MobileGestalt deprecated (iOS >= 17.4).')
 
 
 if __name__ == '__main__':

@@ -319,6 +319,10 @@ class AppInstallError(PyMobileDevice3Exception):
     pass
 
 
+class AppNotInstalledError(PyMobileDevice3Exception):
+    pass
+
+
 class CoreDeviceError(PyMobileDevice3Exception):
     pass
 
@@ -339,6 +343,11 @@ class MobileActivationException(PyMobileDevice3Exception):
 
 class NotEnoughDiskSpaceError(PyMobileDevice3Exception):
     """ Computer does not have enough disk space for the intended operation """
+    pass
+
+
+class DeprecationError(PyMobileDevice3Exception):
+    """ The requested action/service/method is deprecated """
     pass
 
 
