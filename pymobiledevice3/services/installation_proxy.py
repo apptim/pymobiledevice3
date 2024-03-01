@@ -152,18 +152,16 @@ class InstallationProxyService(LockdownService):
         cmd = {'Command': 'Lookup', 'ClientOptions': options}
         return self.service.send_recv_plist(cmd).get('LookupResult')
 
-    def get_apps(self, application_type: str = 'Any', calculate_sizes: bool = False,
-                 bundle_identifiers: Optional[List[str]] = None) -> Mapping[str, Mapping]:
+    def get_apps(self, app_types: List[str] = None, calculate_sizes: bool = False) -> Mapping[str, Mapping]:
         """ get applications according to given criteria """
-        options = {}
-        if bundle_identifiers is not None:
-            options['BundleIDs'] = bundle_identifiers
-
-        options['ApplicationType'] = application_type
-        result = self.lookup(options)
+        result = self.lookup()
         if calculate_sizes:
-            options.update(GET_APPS_ADDITIONAL_INFO)
-            additional_info = self.lookup(options)
+            additional_info = self.lookup(GET_APPS_ADDITIONAL_INFO)
             for bundle_identifier, app in additional_info.items():
                 result[bundle_identifier].update(app)
-        return result
+        # filter results
+        filtered_result = {}
+        for bundle_identifier, app in result.items():
+            if (app_types is None) or (app['ApplicationType'] in app_types):
+                filtered_result[bundle_identifier] = app
+        return filtered_result
