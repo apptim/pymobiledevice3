@@ -1,14 +1,14 @@
 import logging
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 try:
-    from pymobiledevice3.remote.core_device_tunnel_service import RemotePairingQuicTunnel, start_tunnel
+    from pymobiledevice3.remote.tunnel_service import RemotePairingQuicTunnel, start_tunnel
 
     MAX_IDLE_TIMEOUT = RemotePairingQuicTunnel.MAX_IDLE_TIMEOUT
-except ImportError as ie:
-    logger.error(f'Something happened while importing start_tunnel {ie}')
-    start_tunnel = None
+except ImportError:
+    start_tunnel: Optional[Callable] = None
     MAX_IDLE_TIMEOUT = None
 
 GENERAL_IMPORT_ERROR = """Failed to import `start_tunnel`.
@@ -17,7 +17,7 @@ https://github.com/doronz88/pymobiledevice3/issues/new?assignees=&labels=&projec
 
 Also, please supply with a traceback of the following python line:
 
-from pymobiledevice3.remote.core_device_tunnel_service import start_tunnel
+from pymobiledevice3.remote.tunnel_service import start_tunnel
 """
 
 
