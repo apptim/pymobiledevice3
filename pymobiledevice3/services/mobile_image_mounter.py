@@ -1,5 +1,6 @@
 import hashlib
 import plistlib
+import sys
 from pathlib import Path
 from typing import List, Mapping
 
@@ -10,7 +11,7 @@ from pymobiledevice3.common import get_home_folder
 from pymobiledevice3.exceptions import AlreadyMountedError, DeveloperDiskImageNotFoundError, \
     DeveloperModeIsNotEnabledError, InternalError, MessageNotSupportedError, MissingManifestError, \
     NoSuchBuildIdentityError, NotMountedError, PyMobileDevice3Exception, UnsupportedCommandError, \
-    DeviceHasPasscodeSetError
+    DeviceHasPasscodeSetError, HostOSVersionNotSupported
 from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.restore.tss import TSSRequest
@@ -363,4 +364,7 @@ def auto_mount(lockdown: LockdownServiceProvider, xcode: str = None, version: st
     if Version(lockdown.product_version) < Version('17.0'):
         auto_mount_developer(lockdown, xcode=xcode, version=version)
     else:
+        # Windows not supported yet
+        if sys.platform != "darwin":
+            raise HostOSVersionNotSupported()
         auto_mount_personalized(lockdown)
