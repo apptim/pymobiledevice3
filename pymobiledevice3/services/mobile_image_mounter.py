@@ -11,7 +11,7 @@ from pymobiledevice3.common import get_home_folder
 from pymobiledevice3.exceptions import AlreadyMountedError, DeveloperDiskImageNotFoundError, \
     DeveloperModeIsNotEnabledError, InternalError, MessageNotSupportedError, MissingManifestError, \
     NoSuchBuildIdentityError, NotMountedError, PyMobileDevice3Exception, UnsupportedCommandError, \
-    DeviceHasPasscodeSetError, HostOSVersionNotSupported, DeviceLockedError
+    HostOSVersionNotSupportedError, DeviceLockedError
 from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.restore.tss import TSSRequest
@@ -368,5 +368,5 @@ def auto_mount(lockdown: LockdownServiceProvider, xcode: str = None, version: st
     else:
         # Windows not supported yet
         if sys.platform != "darwin":
-            raise HostOSVersionNotSupported()
+            raise HostOSVersionNotSupportedError()
         auto_mount_personalized(lockdown)
