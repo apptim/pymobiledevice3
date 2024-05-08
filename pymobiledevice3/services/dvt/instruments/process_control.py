@@ -3,7 +3,7 @@ import datetime
 import sys
 import typing
 
-from pymobiledevice3.exceptions import DeviceHasPasscodeSetError, DvtException
+from pymobiledevice3.exceptions import DvtException, DeviceLockedError
 from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
 from pymobiledevice3.services.remote_server import MessageAux
 
@@ -79,7 +79,7 @@ class ProcessControl:
             result = self._channel.receive_plist()
         except DvtException as exc:
             error = exc.args[0]["NSLocalizedFailureReason"]
-            raise DeviceHasPasscodeSetError() if "the device was not, or could not be, unlocked" in error else error
+            raise DeviceLockedError() if "the device was not, or could not be, unlocked" in error else error
         assert result
         return result
 
