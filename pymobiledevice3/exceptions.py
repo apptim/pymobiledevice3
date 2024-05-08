@@ -12,7 +12,7 @@ __all__ = [
     'DeveloperModeError', 'ProfileError', 'IRecvError', 'IRecvNoDeviceConnectedError',
     'NoDeviceSelectedError', 'MessageNotSupportedError', 'InvalidServiceError', 'InspectorEvaluateError',
     'LaunchingApplicationError', 'BadCommandError', 'BadDevError', 'ConnectionFailedError', 'CoreDeviceError',
-    'AccessDeniedError', 'RSDRequiredError', 'HostOSVersionNotSupported'
+    'AccessDeniedError', 'RSDRequiredError', 'HostOSVersionNotSupportedError', 'DeviceLockedError'
 ]
 
 from typing import List, Optional
@@ -355,6 +355,10 @@ class RSDRequiredError(PyMobileDevice3Exception):
     """ The requested action requires an RSD object """
     pass
 
-class HostOSVersionNotSupported(PyMobileDevice3Exception):
+class HostOSVersionNotSupportedError(PyMobileDevice3Exception):
     """ The host OS version is not supported """
+    pass
+
+class DeviceLockedError(PyMobileDevice3Exception):
+    """ The device is locked """
     pass

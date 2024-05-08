@@ -11,7 +11,7 @@ from pymobiledevice3.common import get_home_folder
 from pymobiledevice3.exceptions import AlreadyMountedError, DeveloperDiskImageNotFoundError, \
     DeveloperModeIsNotEnabledError, InternalError, MessageNotSupportedError, MissingManifestError, \
     NoSuchBuildIdentityError, NotMountedError, PyMobileDevice3Exception, UnsupportedCommandError, \
-    DeviceHasPasscodeSetError, HostOSVersionNotSupported
+    DeviceHasPasscodeSetError, HostOSVersionNotSupported, DeviceLockedError
 from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.restore.tss import TSSRequest
@@ -78,6 +78,8 @@ class MobileImageMounterService(LockdownService):
                 raise NotMountedError(response)
             elif error == 'InternalError':
                 raise InternalError(response)
+            elif error == 'DeviceLocked':
+                raise DeviceLockedError()
             else:
                 raise PyMobileDevice3Exception(response)
 
@@ -115,7 +117,7 @@ class MobileImageMounterService(LockdownService):
 
         if status != 'ReceiveBytesAck':
             if 'DeviceLocked' in result.get('Error', ''):
-                raise DeviceHasPasscodeSetError()
+                raise DeviceLockedError()
             else:
                 raise PyMobileDevice3Exception(f'command ReceiveBytes failed with: {result}')
 
