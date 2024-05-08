@@ -48,6 +48,8 @@ class MobileImageMounterService(LockdownService):
         response = self.service.send_recv_plist({'Command': 'LookupImage',
                                                  'ImageType': image_type})
 
+        if not response or 'DeviceLocked' in response.get('Error', ''):
+            raise DeviceLockedError()
         if not response or not response.get('ImagePresent', True):
             raise NotMountedError()
 
@@ -116,10 +118,7 @@ class MobileImageMounterService(LockdownService):
         status = result.get('Status')
 
         if status != 'ReceiveBytesAck':
-            if 'DeviceLocked' in result.get('Error', ''):
-                raise DeviceLockedError()
-            else:
-                raise PyMobileDevice3Exception(f'command ReceiveBytes failed with: {result}')
+            raise PyMobileDevice3Exception(f'command ReceiveBytes failed with: {result}')
 
         self.service.sendall(image)
         result = self.service.recv_plist()
