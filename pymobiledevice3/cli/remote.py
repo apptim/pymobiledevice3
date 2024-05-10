@@ -187,8 +187,11 @@ async def tunnel_task(
 
 
 async def start_tunnel_task(
-        connection_type: ConnectionType, secrets: TextIO, udid: Optional[str] = None, script_mode: bool = False,
-        max_idle_timeout: float = MAX_IDLE_TIMEOUT, protocol: TunnelProtocol = TunnelProtocol.QUIC) -> None:
+        connection_type: ConnectionType, secrets: TextIO = None, udid: Optional[str] = None, script_mode: bool = False,
+        max_idle_timeout: float = MAX_IDLE_TIMEOUT, protocol: TunnelProtocol = TunnelProtocol.QUIC,
+        tunnels_addresses_file: str = '',
+        creating_tunnels_signal_file: str = '',
+        close_tunnels_signal_file: str = '') -> None:
     if start_tunnel is None:
         raise NotImplementedError('failed to start the tunnel on your platform')
     get_tunnel_services = {
@@ -207,12 +210,16 @@ async def start_tunnel_task(
         service = prompt_device_list(tunnel_services)
 
     await tunnel_task(service, secrets=secrets, script_mode=script_mode, max_idle_timeout=max_idle_timeout,
-                      protocol=protocol)
+                      protocol=protocol, tunnels_addresses_file=tunnels_addresses_file,
+                      creating_tunnels_signal_file=creating_tunnels_signal_file,
+                      close_tunnels_signal_file=close_tunnels_signal_file)
 
 
-async def tunnel_task_concurrently(rsd, tunnels_to_create, tunnels_addresses_file, creating_tunnels_signal_file, close_tunnels_signal_file):
-    tasks = [tunnel_task(rsd, tunnels_addresses_file=tunnels_addresses_file, creating_tunnels_signal_file=creating_tunnels_signal_file,
-                         close_tunnels_signal_file=close_tunnels_signal_file)
+async def tunnel_task_concurrently(udid, tunnels_to_create, tunnels_addresses_file, creating_tunnels_signal_file,
+                                   close_tunnels_signal_file):
+    tasks = [start_tunnel_task(ConnectionType.USB.value, udid=udid, tunnels_addresses_file=tunnels_addresses_file,
+                               creating_tunnels_signal_file=creating_tunnels_signal_file,
+                               close_tunnels_signal_file=close_tunnels_signal_file)
              for _ in range(tunnels_to_create)]
     await asyncio.gather(*tasks)
     if close_tunnels_signal_file and os.path.exists(close_tunnels_signal_file):
@@ -232,16 +239,20 @@ async def tunnel_task_concurrently(rsd, tunnels_to_create, tunnels_addresses_fil
 @click.option('-p', '--protocol',
               type=click.Choice([e.value for e in TunnelProtocol], case_sensitive=False),
               default=TunnelProtocol.QUIC.value)
+@click.option('--creating_tunnels_signal_file', help='Location to save creating tunnels signal file')
 @click.option('--tunnels-addresses-file', help='Location to save created tunnel addresses')
 @click.option('--close-tunnels-signal-file', help='Location to save tunnel closure signal file')
 @sudo_required
-def cli_start_tunnel(connection_type: ConnectionType, udid: str, secrets: TextIO, script_mode: bool, max_idle_timeout: float, protocol: str, tunnels_addresses_file: str, close_tunnels_signal_file: str):
+def cli_start_tunnel(connection_type: ConnectionType, udid: str, secrets: TextIO, script_mode: bool,
+                     max_idle_timeout: float, protocol: str, creating_tunnels_signal_file: str,
+                     tunnels_addresses_file: str, close_tunnels_signal_file: str):
     """ start quic tunnel """
     if not verify_tunnel_imports():
         return
-    asyncio.run(start_tunnel_task(ConnectionType(connection_type), secrets, script_mode, max_idle_timeout=max_idle_timeout, protocol=protocol,
-                            tunnels_addresses_file=tunnels_addresses_file,
-                            close_tunnels_signal_file=close_tunnels_signal_file), debug=True)
+    asyncio.run(start_tunnel_task(ConnectionType(connection_type), secrets, udid, script_mode, max_idle_timeout,
+                                  TunnelProtocol(protocol), creating_tunnels_signal_file, tunnels_addresses_file,
+                                  close_tunnels_signal_file))
+
 
 @dataclasses.dataclass
 class RemotePairingManualPairingDevice:
