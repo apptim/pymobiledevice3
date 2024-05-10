@@ -158,22 +158,28 @@ async def tunnel_task(
                 if secrets is not None:
                     print(click.style('Secrets: ', bold=True, fg='magenta') +
                         click.style(secrets.name, bold=True, fg='white'))
-                print(click.style('UDID: ', bold=True, fg='yellow') +
-                    click.style(service.udid, bold=True, fg='white'))
-                print(click.style('ProductType: ', bold=True, fg='yellow') +
-                    click.style(service.product_type, bold=True, fg='white'))
-                print(click.style('ProductVersion: ', bold=True, fg='yellow') +
-                    click.style(service.product_version, bold=True, fg='white'))
+                print(click.style('Identifier: ', bold=True, fg='yellow') +
+                      click.style(service.remote_identifier, bold=True, fg='white'))
                 print(click.style('Interface: ', bold=True, fg='yellow') +
-                    click.style(tunnel_result.interface, bold=True, fg='white'))
+                      click.style(tunnel_result.interface, bold=True, fg='white'))
                 print(click.style('Protocol: ', bold=True, fg='yellow') +
-                    click.style(tunnel_result.protocol, bold=True, fg='white'))
+                      click.style(tunnel_result.protocol, bold=True, fg='white'))
                 print(click.style('RSD Address: ', bold=True, fg='yellow') +
-                    click.style(tunnel_result.address, bold=True, fg='white'))
+                      click.style(tunnel_result.address, bold=True, fg='white'))
                 print(click.style('RSD Port: ', bold=True, fg='yellow') +
-                    click.style(tunnel_result.port, bold=True, fg='white'))
+                      click.style(tunnel_result.port, bold=True, fg='white'))
                 print(click.style('Use the follow connection option:\n', bold=True, fg='yellow') +
-                    click.style(f'--rsd {tunnel_result.address} {tunnel_result.port}', bold=True, fg='cyan'))
+                      click.style(f'--rsd {tunnel_result.address} {tunnel_result.port}', bold=True, fg='cyan'))
+            else:
+                if secrets is not None:
+                    print(f'Secrets: {secrets.name}')
+                print(f'Identifier: {service.remote_identifier}')
+                print(f'Interface: {tunnel_result.interface}')
+                print(f'Protocol: {tunnel_result.protocol}')
+                print(f'RSD Address: {tunnel_result.address}')
+                print(f'RSD Port: {tunnel_result.port}')
+                print(f'Use the follow connection option:\n'
+                      f'--rsd {tunnel_result.address} {tunnel_result.port}')
         if close_tunnels_signal_file:
             while not os.path.exists(close_tunnels_signal_file):
                 # wait signal file existence while the asyncio tasks execute
