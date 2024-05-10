@@ -256,6 +256,7 @@ def cli_start_tunnel(connection_type: ConnectionType, udid: str, secrets: TextIO
     """ start quic tunnel """
     if not verify_tunnel_imports():
         return
+    print(f"Starting tunnel with connection type: {ConnectionType(connection_type)} for device: {udid}")
     asyncio.run(start_tunnel_task(ConnectionType(connection_type), secrets, udid, script_mode, max_idle_timeout,
                                   TunnelProtocol(protocol), creating_tunnels_signal_file, tunnels_addresses_file,
                                   close_tunnels_signal_file))
