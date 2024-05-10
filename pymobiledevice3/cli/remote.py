@@ -224,7 +224,7 @@ async def start_tunnel_task(
 
 async def tunnel_task_concurrently(udid, tunnels_to_create, tunnels_addresses_file, creating_tunnels_signal_file,
                                    close_tunnels_signal_file):
-    tasks = [start_tunnel_task(ConnectionType.USB.value, udid=udid, tunnels_addresses_file=tunnels_addresses_file,
+    tasks = [start_tunnel_task(ConnectionType(ConnectionType.USB.value), udid=udid, tunnels_addresses_file=tunnels_addresses_file,
                                creating_tunnels_signal_file=creating_tunnels_signal_file,
                                close_tunnels_signal_file=close_tunnels_signal_file)
              for _ in range(tunnels_to_create)]
