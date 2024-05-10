@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import json
 import logging
 import os
 import sys
@@ -158,11 +159,11 @@ async def tunnel_task(
                     print(click.style('Secrets: ', bold=True, fg='magenta') +
                         click.style(secrets.name, bold=True, fg='white'))
                 print(click.style('UDID: ', bold=True, fg='yellow') +
-                    click.style(service_provider.udid, bold=True, fg='white'))
+                    click.style(service.udid, bold=True, fg='white'))
                 print(click.style('ProductType: ', bold=True, fg='yellow') +
-                    click.style(service_provider.product_type, bold=True, fg='white'))
+                    click.style(service.product_type, bold=True, fg='white'))
                 print(click.style('ProductVersion: ', bold=True, fg='yellow') +
-                    click.style(service_provider.product_version, bold=True, fg='white'))
+                    click.style(service.product_version, bold=True, fg='white'))
                 print(click.style('Interface: ', bold=True, fg='yellow') +
                     click.style(tunnel_result.interface, bold=True, fg='white'))
                 print(click.style('Protocol: ', bold=True, fg='yellow') +
