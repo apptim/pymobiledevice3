@@ -194,18 +194,19 @@ async def tunnel_task(
 
 
 async def start_tunnel_task(
-        connection_type: ConnectionType, secrets: TextIO = None, udid: Optional[str] = None, script_mode: bool = False,
+        secrets: TextIO = None, udid: Optional[str] = None, script_mode: bool = False,
         max_idle_timeout: float = MAX_IDLE_TIMEOUT, protocol: TunnelProtocol = TunnelProtocol.QUIC,
         tunnels_addresses_file: str = '',
         creating_tunnels_signal_file: str = '',
         close_tunnels_signal_file: str = '') -> None:
     if start_tunnel is None:
         raise NotImplementedError('failed to start the tunnel on your platform')
-    get_tunnel_services = {
-        connection_type.USB: get_core_device_tunnel_services,
-        connection_type.WIFI: get_remote_pairing_tunnel_services,
-    }
-    tunnel_services = await get_tunnel_services[connection_type](udid=udid)
+
+    """
+        If we want to allow WiFi connected devices; we can use get_remote_pairing_tunnel_services(udid=udid)
+        Just USB connected devices are allowed by default
+    """
+    tunnel_services = await get_core_device_tunnel_services(udid=udid)
     if not tunnel_services:
         # no devices were found
         raise NoDeviceConnectedError()
@@ -224,7 +225,7 @@ async def start_tunnel_task(
 
 async def tunnel_task_concurrently(udid, tunnels_to_create, tunnels_addresses_file, creating_tunnels_signal_file,
                                    close_tunnels_signal_file):
-    tasks = [start_tunnel_task(ConnectionType(ConnectionType.USB.value), udid=udid, tunnels_addresses_file=tunnels_addresses_file,
+    tasks = [start_tunnel_task(udid=udid, tunnels_addresses_file=tunnels_addresses_file,
                                creating_tunnels_signal_file=creating_tunnels_signal_file,
                                close_tunnels_signal_file=close_tunnels_signal_file)
              for _ in range(tunnels_to_create)]
@@ -235,8 +236,8 @@ async def tunnel_task_concurrently(udid, tunnels_to_create, tunnels_addresses_fi
 
 
 @remote_cli.command('start-tunnel', cls=BaseCommand)
-@click.option('-t', '--connection-type', type=click.Choice([e.value for e in ConnectionType], case_sensitive=False),
-              default=ConnectionType.USB.value)
+# @click.option('-t', '--connection-type', type=click.Choice([e.value for e in ConnectionType], case_sensitive=False),
+#               default=ConnectionType.USB.value)
 @click.option('--udid', help='UDID for a specific device to look for')
 @click.option('--secrets', type=click.File('wt'), help='TLS keyfile for decrypting with Wireshark')
 @click.option('--script-mode', is_flag=True,
@@ -250,14 +251,14 @@ async def tunnel_task_concurrently(udid, tunnels_to_create, tunnels_addresses_fi
 @click.option('--tunnels-addresses-file', help='Location to save created tunnel addresses')
 @click.option('--close-tunnels-signal-file', help='Location to save tunnel closure signal file')
 @sudo_required
-def cli_start_tunnel(connection_type: ConnectionType, udid: str, secrets: TextIO, script_mode: bool,
+def cli_start_tunnel(udid: str, secrets: TextIO, script_mode: bool,
                      max_idle_timeout: float, protocol: str, creating_tunnels_signal_file: str,
                      tunnels_addresses_file: str, close_tunnels_signal_file: str):
     """ start quic tunnel """
     if not verify_tunnel_imports():
         return
-    print(f"Starting tunnel with connection type: {ConnectionType(connection_type)} for device: {udid}")
-    asyncio.run(start_tunnel_task(ConnectionType(connection_type), secrets, udid, script_mode, max_idle_timeout,
+
+    asyncio.run(start_tunnel_task(secrets, udid, script_mode, max_idle_timeout,
                                   TunnelProtocol(protocol), creating_tunnels_signal_file, tunnels_addresses_file,
                                   close_tunnels_signal_file))
 
