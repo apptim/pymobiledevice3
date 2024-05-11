@@ -1,4 +1,5 @@
 import asyncio
+from asyncio.locks import Lock
 import base64
 import binascii
 import dataclasses
@@ -346,6 +347,7 @@ class RemotePairingProtocol(StartTcpTunnel):
         self.encryption_key = None
         self.signature = None
         self.logger = logging.getLogger(self.__class__.__name__)
+        self._socket_lock = Lock()
 
     @abstractmethod
     async def close(self) -> None:
@@ -372,15 +374,16 @@ class RemotePairingProtocol(StartTcpTunnel):
         self._init_client_server_main_encryption_keys()
 
     async def create_quic_listener(self, private_key: RSAPrivateKey) -> Mapping:
-        request = {'request': {'_0': {'createListener': {
-            'key': base64.b64encode(
-                private_key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
-            ).decode(),
-            'peerConnectionsInfo': [{'owningPID': os.getpid(), 'owningProcessName': 'CoreDeviceService'}],
-            'transportProtocolType': 'quic'}}}}
+        async with self._socket_lock:
+            request = {'request': {'_0': {'createListener': {
+                'key': base64.b64encode(
+                    private_key.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+                ).decode(),
+                'peerConnectionsInfo': [{'owningPID': os.getpid(), 'owningProcessName': 'CoreDeviceService'}],
+                'transportProtocolType': 'quic'}}}}
 
-        response = await self._send_receive_encrypted_request(request)
-        return response['createListener']
+            response = await self._send_receive_encrypted_request(request)
+            return response['createListener']
 
     async def create_tcp_listener(self) -> Mapping:
         request = {'request': {'_0': {'createListener': {
