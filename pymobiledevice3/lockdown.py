@@ -10,17 +10,22 @@ from contextlib import contextmanager, suppress
 from enum import Enum
 from functools import wraps
 from pathlib import Path
+from ssl import SSLZeroReturnError
 from typing import Dict, Mapping, Optional
 
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding
+from cryptography.hazmat.primitives.serialization.pkcs7 import PKCS7SignatureBuilder
+from cryptography.hazmat.primitives.serialization.pkcs12 import load_pkcs12
 from packaging.version import Version
 
 from pymobiledevice3 import usbmux
 from pymobiledevice3.ca import ca_do_everything
 from pymobiledevice3.exceptions import CannotStopSessionError, ConnectionTerminatedError, FatalPairingError, \
-    IncorrectModeError, InvalidConnectionError, InvalidHostIDError, InvalidServiceError, LockdownError, \
-    MissingValueError, NotPairedError, PairingDialogResponsePendingError, PairingError, PasswordRequiredError, \
-    SetProhibitedError, StartServiceError, UserDeniedPairingError
+    GetProhibitedError, IncorrectModeError, InvalidConnectionError, InvalidHostIDError, InvalidServiceError, \
+    LockdownError, MissingValueError, NotPairedError, PairingDialogResponsePendingError, PairingError, \
+    PasswordRequiredError, SetProhibitedError, StartServiceError, UserDeniedPairingError
 from pymobiledevice3.irecv_devices import IRECV_DEVICES
 from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.pair_records import create_pairing_records_cache_folder, generate_host_id, \
@@ -56,12 +61,7 @@ def _reconnect_on_remote_close(f):
         except (BrokenPipeError, ConnectionTerminatedError):
             self: LockdownClient = args[0]
 
-            # first we release the socket on our end to avoid a ResourceWarning
-            self.close()
-
-            # now we re-establish the connection
-            self.logger.debug('remote device closed the connection. reconnecting...')
-            self.service = self._create_service_connection(self.port)
+            self._reestablish_connection()
             self.validate_pairing()
             return f(*args, **kwargs)
 
@@ -311,7 +311,12 @@ class LockdownClient(ABC, LockdownServiceProvider):
         self.session_id = start_session.get('SessionID')
         if start_session.get('EnableSessionSSL'):
             with self.ssl_file() as f:
-                self.service.ssl_start(f)
+                try:
+                    self.service.ssl_start(f)
+                except SSLZeroReturnError:
+                    # possible when we have a pair record, but it was removed on-device
+                    self._reestablish_connection()
+                    return False
 
         self.paired = True
 
@@ -345,6 +350,63 @@ class LockdownClient(ABC, LockdownServiceProvider):
                         'PairingOptions': {'ExtendedPairingErrors': True}}
 
         pair = self._request_pair(pair_options, timeout=timeout)
+
+        pair_record['HostPrivateKey'] = private_key_pem
+        escrow_bag = pair.get('EscrowBag')
+
+        if escrow_bag is not None:
+            pair_record['EscrowBag'] = pair.get('EscrowBag')
+
+        self.pair_record = pair_record
+        self.save_pair_record()
+        self.paired = True
+
+    @_reconnect_on_remote_close
+    def pair_supervised(self, timeout: float = None, p12file: Path = None, password: str = None) -> None:
+
+        keystore_data = p12file.read()
+        try:
+            decrypted_p12 = load_pkcs12(
+                keystore_data, password.encode('utf-8'))
+        except Exception as pkcs12_error:
+            self.service.close()
+            raise Exception(f'load_pkcs12 error: {pkcs12_error}')
+
+        self.device_public_key = self.get_value('', 'DevicePublicKey')
+        if not self.device_public_key:
+            self.logger.error('Unable to retrieve DevicePublicKey')
+            self.service.close()
+            raise PairingError()
+
+        self.logger.info('Creating host key & certificate')
+        cert_pem, private_key_pem, device_certificate = ca_do_everything(
+            self.device_public_key)
+
+        pair_record = {'DevicePublicKey': self.device_public_key,
+                       'DeviceCertificate': device_certificate,
+                       'HostCertificate': cert_pem,
+                       'HostID': self.host_id,
+                       'RootCertificate': cert_pem,
+                       'RootPrivateKey': private_key_pem,
+                       'WiFiMACAddress': self.wifi_mac_address,
+                       'SystemBUID': self.system_buid}
+
+        pair_options = {'PairRecord': pair_record, 'ProtocolVersion': '2',
+                        'PairingOptions': {'SupervisorCertificate': decrypted_p12.cert.certificate.public_bytes(Encoding.DER),
+                                           'ExtendedPairingErrors': True}}
+
+        # first pair with SupervisorCertificate as PairingOptions to get Challenge
+        pair = self._request_pair(pair_options, timeout=timeout)
+        if pair.get('Error') == 'MCChallengeRequired':
+            extendedresponse = pair.get('ExtendedResponse')
+            if extendedresponse is not None:
+                pairingchallenge = extendedresponse.get('PairingChallenge')
+                signed_response = PKCS7SignatureBuilder().set_data(pairingchallenge).add_signer(
+                    decrypted_p12.cert.certificate, decrypted_p12.key, hashes.SHA256()).sign(Encoding.DER, [])
+                pair_options = {'PairRecord': pair_record, 'ProtocolVersion': '2', 'PairingOptions': {
+                    'ChallengeResponse': signed_response, 'ExtendedPairingErrors': True}}
+                # second pair with Response to Challenge
+                pair = self._request_pair(pair_options, timeout=timeout)
 
         pair_record['HostPrivateKey'] = private_key_pem
         escrow_bag = pair.get('EscrowBag')
@@ -488,10 +550,14 @@ class LockdownClient(ABC, LockdownServiceProvider):
 
         error = response.get('Error')
         if error is not None:
+            # return response if supervisor cert challenge is required, to work with pair_supervisor
+            if error == 'MCChallengeRequired':
+                return response
             exception_errors = {'PasswordProtected': PasswordRequiredError,
                                 'PairingDialogResponsePending': PairingDialogResponsePendingError,
                                 'UserDeniedPairing': UserDeniedPairingError,
                                 'InvalidHostID': InvalidHostIDError,
+                                'GetProhibited': GetProhibitedError,
                                 'SetProhibited': SetProhibitedError,
                                 'MissingValue': MissingValueError,
                                 'InvalidService': InvalidServiceError,
@@ -526,6 +592,10 @@ class LockdownClient(ABC, LockdownServiceProvider):
     def save_pair_record(self) -> None:
         pair_record_file = self.pairing_records_cache_folder / f'{self.identifier}.plist'
         pair_record_file.write_bytes(plistlib.dumps(self.pair_record))
+
+    def _reestablish_connection(self) -> None:
+        self.close()
+        self.service = self._create_service_connection(self.port)
 
 
 class UsbmuxLockdownClient(LockdownClient):
@@ -594,11 +664,11 @@ class RemoteLockdownClient(LockdownClient):
         raise NotImplementedError(
             'RemoteXPC service connections should only be created using RemoteServiceDiscoveryService')
 
-    def _handle_autopair(self, *args):
+    def _handle_autopair(self, *args, **kwargs):
         # The RemoteXPC version of lockdown doesn't support pairing operations
         return None
 
-    def pair(self, timeout: float = None) -> None:
+    def pair(self, *args, **kwargs) -> None:
         raise NotImplementedError('RemoteXPC lockdown version does not support pairing operations')
 
     def unpair(self, timeout: float = None) -> None:
