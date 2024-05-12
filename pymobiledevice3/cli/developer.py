@@ -85,6 +85,10 @@ def developer():
     to execution. You can achieve this using:
 
     pymobiledevice3 mounter mount
+
+    Also, starting at iOS 17.0, a tunnel must be created to the device for the services
+    to be accessible. Therefore, every CLI command is retried with a `--tunnel` option
+    for implicitly accessing tunneld when necessary
     """
     pass
 
@@ -117,7 +121,7 @@ def proclist(service_provider: LockdownClient):
 
 
 @dvt.command('applist', cls=Command)
-def applist(service_provider: LockdownClient, color):
+def applist(service_provider: LockdownServiceProvider) -> None:
     """ show application list """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         apps = ApplicationListing(dvt).applist()
@@ -259,8 +263,8 @@ def netstat(service_provider: LockdownClient):
             for event in monitor:
                 if isinstance(event, ConnectionDetectionEvent):
                     logger.info(
-                        f'Connection detected: {event.local_address.data.hostname}:{event.local_address.port} -> '
-                        f'{event.remote_address.data.hostname}:{event.remote_address.port}')
+                        f'Connection detected: {event.local_address.data.address}:{event.local_address.port} -> '
+                        f'{event.remote_address.data.address}:{event.remote_address.port}')
 
 
 @dvt.command('screenshot', cls=Command)
