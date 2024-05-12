@@ -1,5 +1,6 @@
 import hashlib
 import plistlib
+import sys
 from pathlib import Path
 from typing import List, Mapping
 
@@ -9,7 +10,8 @@ from packaging.version import Version
 from pymobiledevice3.common import get_home_folder
 from pymobiledevice3.exceptions import AlreadyMountedError, DeveloperDiskImageNotFoundError, \
     DeveloperModeIsNotEnabledError, InternalError, MessageNotSupportedError, MissingManifestError, \
-    NoSuchBuildIdentityError, NotMountedError, PyMobileDevice3Exception, UnsupportedCommandError
+    NoSuchBuildIdentityError, NotMountedError, PyMobileDevice3Exception, UnsupportedCommandError, \
+    HostOSVersionNotSupportedError, DeviceLockedError
 from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.restore.tss import TSSRequest
@@ -46,6 +48,8 @@ class MobileImageMounterService(LockdownService):
         response = self.service.send_recv_plist({'Command': 'LookupImage',
                                                  'ImageType': image_type})
 
+        if not response or 'DeviceLocked' in response.get('Error', ''):
+            raise DeviceLockedError()
         if not response or not response.get('ImagePresent', True):
             raise NotMountedError()
 
@@ -76,6 +80,8 @@ class MobileImageMounterService(LockdownService):
                 raise NotMountedError(response)
             elif error == 'InternalError':
                 raise InternalError(response)
+            elif error == 'DeviceLocked':
+                raise DeviceLockedError()
             else:
                 raise PyMobileDevice3Exception(response)
 
@@ -359,4 +365,7 @@ def auto_mount(lockdown: LockdownServiceProvider, xcode: str = None, version: st
     if Version(lockdown.product_version) < Version('17.0'):
         auto_mount_developer(lockdown, xcode=xcode, version=version)
     else:
+        # Windows not supported yet
+        if sys.platform != "darwin":
+            raise HostOSVersionNotSupportedError()
         auto_mount_personalized(lockdown)

@@ -1,5 +1,8 @@
 import asyncio
+import dataclasses
+import json
 import logging
+import os
 import sys
 import tempfile
 from functools import partial
@@ -7,7 +10,7 @@ from typing import List, Mapping, Optional, TextIO
 
 import click
 
-from pymobiledevice3.bonjour import DEFAULT_BONJOUR_TIMEOUT
+from pymobiledevice3.bonjour import DEFAULT_BONJOUR_TIMEOUT, browse_remotepairing_manual_pairing
 from pymobiledevice3.cli.cli_common import BaseCommand, RSDCommand, print_json, prompt_device_list, sudo_required, \
     user_requested_colored_output
 from pymobiledevice3.common import get_home_folder
@@ -16,7 +19,8 @@ from pymobiledevice3.pair_records import PAIRING_RECORD_EXT, get_remote_pairing_
 from pymobiledevice3.remote.common import ConnectionType, TunnelProtocol
 from pymobiledevice3.remote.module_imports import MAX_IDLE_TIMEOUT, start_tunnel, verify_tunnel_imports
 from pymobiledevice3.remote.remote_service_discovery import RSD_PORT, RemoteServiceDiscoveryService
-from pymobiledevice3.remote.tunnel_service import get_core_device_tunnel_services, get_remote_pairing_tunnel_services
+from pymobiledevice3.remote.tunnel_service import RemotePairingManualPairingService, get_core_device_tunnel_services, \
+    get_remote_pairing_tunnel_services
 from pymobiledevice3.remote.utils import get_rsds
 from pymobiledevice3.tunneld import TUNNELD_DEFAULT_ADDRESS, TunneldRunner
 
@@ -71,15 +75,17 @@ def remote_cli():
 @click.option('--usb/--no-usb', default=True, help='Enable usb monitoring')
 @click.option('--wifi/--no-wifi', default=True, help='Enable wifi monitoring')
 @click.option('--usbmux/--no-usbmux', default=True, help='Enable usbmux monitoring')
+@click.option('--mobdev2/--no-mobdev2', default=True, help='Enable mobdev2 monitoring')
 @sudo_required
 def cli_tunneld(
-        host: str, port: int, daemonize: bool, protocol: str, usb: bool, wifi: bool, usbmux: bool) -> None:
+        host: str, port: int, daemonize: bool, protocol: str, usb: bool, wifi: bool, usbmux: bool,
+        mobdev2: bool) -> None:
     """ Start Tunneld service for remote tunneling """
     if not verify_tunnel_imports():
         return
     protocol = TunnelProtocol(protocol)
     tunneld_runner = partial(TunneldRunner.create, host, port, protocol=protocol, usb_monitor=usb, wifi_monitor=wifi,
-                             usbmux_monitor=usbmux)
+                             usbmux_monitor=usbmux, mobdev2_monitor=mobdev2)
     if daemonize:
         try:
             from daemonize import Daemonize
@@ -108,18 +114,50 @@ def rsd_info(service_provider: RemoteServiceDiscoveryService):
 
 
 async def tunnel_task(
-        service, secrets: Optional[TextIO] = None, script_mode: bool = False,
-        max_idle_timeout: float = MAX_IDLE_TIMEOUT, protocol: TunnelProtocol = TunnelProtocol.QUIC) -> None:
+        service, secrets: Optional[TextIO] = None,
+        script_mode: bool = True, max_idle_timeout: float = MAX_IDLE_TIMEOUT,
+        protocol: TunnelProtocol = TunnelProtocol.QUIC, tunnels_addresses_file: str = '',
+        creating_tunnels_signal_file: str = '',
+        close_tunnels_signal_file: str = '') -> None:
+
+    if creating_tunnels_signal_file:
+        with open(creating_tunnels_signal_file, "w") as signal_file:
+            pass
+
     async with start_tunnel(
             service, secrets=secrets, max_idle_timeout=max_idle_timeout, protocol=protocol) as tunnel_result:
+
         logger.info('tunnel created')
+
+        if creating_tunnels_signal_file and os.path.exists(creating_tunnels_signal_file):
+            logger.info('Removing creating tunnels signal file...')
+            os.remove(creating_tunnels_signal_file)
+
         if script_mode:
             print(f'{tunnel_result.address} {tunnel_result.port}')
+            if tunnels_addresses_file:
+
+                if os.path.exists(tunnels_addresses_file):
+                    with open(tunnels_addresses_file, "r") as json_file:
+                        existing_data = json.load(json_file)
+                else:
+                    existing_data = []
+
+                new_data = [{
+                    "address": tunnel_result.address,
+                    "port": tunnel_result.port,
+                    "available": True
+                }]
+
+                existing_data.extend(new_data)
+
+                with open(tunnels_addresses_file, "w") as json_file:
+                    json.dump(existing_data, json_file, indent=4)
         else:
             if user_requested_colored_output():
                 if secrets is not None:
                     print(click.style('Secrets: ', bold=True, fg='magenta') +
-                          click.style(secrets.name, bold=True, fg='white'))
+                        click.style(secrets.name, bold=True, fg='white'))
                 print(click.style('Identifier: ', bold=True, fg='yellow') +
                       click.style(service.remote_identifier, bold=True, fg='white'))
                 print(click.style('Interface: ', bold=True, fg='yellow') +
@@ -142,16 +180,19 @@ async def tunnel_task(
                 print(f'RSD Port: {tunnel_result.port}')
                 print(f'Use the follow connection option:\n'
                       f'--rsd {tunnel_result.address} {tunnel_result.port}')
-        sys.stdout.flush()
-        await tunnel_result.client.wait_closed()
-        logger.info('tunnel was closed')
+        if close_tunnels_signal_file:
+            while not os.path.exists(close_tunnels_signal_file):
+                # wait signal file existence while the asyncio tasks execute
+                await asyncio.sleep(.5)
+        else:
+            sys.stdout.flush()
+            await tunnel_result.client.wait_closed()
+            if tunnels_addresses_file:
+                logger.info('Removing tunnels addresses file...')
+                os.remove(tunnels_addresses_file)
+            logger.info('tunnel was closed')
 
-
-async def start_tunnel_task(
-        connection_type: ConnectionType, secrets: TextIO, udid: Optional[str] = None, script_mode: bool = False,
-        max_idle_timeout: float = MAX_IDLE_TIMEOUT, protocol: TunnelProtocol = TunnelProtocol.QUIC) -> None:
-    if start_tunnel is None:
-        raise NotImplementedError('failed to start the tunnel on your platform')
+async def get_tunnel_service(connection_type: ConnectionType, udid):
     get_tunnel_services = {
         connection_type.USB: get_core_device_tunnel_services,
         connection_type.WIFI: get_remote_pairing_tunnel_services,
@@ -167,8 +208,19 @@ async def start_tunnel_task(
         # several devices were found, show prompt if none explicitly selected
         service = prompt_device_list(tunnel_services)
 
-    await tunnel_task(service, secrets=secrets, script_mode=script_mode, max_idle_timeout=max_idle_timeout,
-                      protocol=protocol)
+    return service
+
+async def tunnel_task_concurrently(udid, tunnels_to_create, tunnels_addresses_file, creating_tunnels_signal_file,
+                                   close_tunnels_signal_file):
+    service = await get_tunnel_service(ConnectionType.USB, udid)
+    tasks = [tunnel_task(service, tunnels_addresses_file=tunnels_addresses_file,
+                               creating_tunnels_signal_file=creating_tunnels_signal_file,
+                               close_tunnels_signal_file=close_tunnels_signal_file)
+             for _ in range(tunnels_to_create)]
+    await asyncio.gather(*tasks)
+    if close_tunnels_signal_file and os.path.exists(close_tunnels_signal_file):
+        logger.info('Removing close tunnels signal file...')
+        os.remove(close_tunnels_signal_file)
 
 
 @remote_cli.command('start-tunnel', cls=BaseCommand)
@@ -183,17 +235,60 @@ async def start_tunnel_task(
 @click.option('-p', '--protocol',
               type=click.Choice([e.value for e in TunnelProtocol], case_sensitive=False),
               default=TunnelProtocol.QUIC.value)
+@click.option('--creating_tunnels_signal_file', help='Location to save creating tunnels signal file')
+@click.option('--tunnels-addresses-file', help='Location to save created tunnel addresses')
+@click.option('--close-tunnels-signal-file', help='Location to save tunnel closure signal file')
 @sudo_required
-def cli_start_tunnel(
-        connection_type: ConnectionType, udid: Optional[str], secrets: TextIO, script_mode: bool,
-        max_idle_timeout: float, protocol: str) -> None:
-    """ start tunnel """
+async def cli_start_tunnel(connection_type: ConnectionType, udid: str, secrets: TextIO, script_mode: bool,
+                     max_idle_timeout: float, protocol: str, creating_tunnels_signal_file: str,
+                     tunnels_addresses_file: str, close_tunnels_signal_file: str):
+    """ start quic tunnel """
     if not verify_tunnel_imports():
         return
-    asyncio.run(
-        start_tunnel_task(
-            ConnectionType(connection_type), secrets, udid, script_mode, max_idle_timeout=max_idle_timeout,
-            protocol=TunnelProtocol(protocol)), debug=True)
+    service = await get_tunnel_service(ConnectionType.USB, udid)
+    asyncio.run(tunnel_task(service, tunnels_addresses_file=tunnels_addresses_file,
+                               creating_tunnels_signal_file=creating_tunnels_signal_file,
+                               close_tunnels_signal_file=close_tunnels_signal_file))
+
+
+@dataclasses.dataclass
+class RemotePairingManualPairingDevice:
+    ip: str
+    port: int
+    device_name: str
+    identifier: str
+
+
+async def start_remote_pair_task(device_name: str) -> None:
+    if start_tunnel is None:
+        raise NotImplementedError('failed to start the tunnel on your platform')
+
+    devices: List[RemotePairingManualPairingDevice] = []
+    for answer in await browse_remotepairing_manual_pairing():
+        current_device_name = answer.properties[b'name'].decode()
+
+        if device_name is not None and current_device_name != device_name:
+            continue
+
+        for ip in answer.ips:
+            devices.append(RemotePairingManualPairingDevice(ip=ip, port=answer.port, device_name=current_device_name,
+                                                            identifier=answer.properties[b'identifier'].decode()))
+
+    if len(devices) > 0:
+        device = prompt_device_list(devices)
+    else:
+        logger.error('No devices were found during bonjour browse')
+        return
+
+    async with RemotePairingManualPairingService(device.identifier, device.ip, device.port) as service:
+        await service.connect(autopair=True)
+
+
+@remote_cli.command('pair', cls=BaseCommand)
+@click.option('--name', help='Device name for a specific device to look for')
+def cli_pair(name: Optional[str]) -> None:
+    """ start remote pairing for devices which allow """
+    asyncio.run(start_remote_pair_task(name), debug=True)
 
 
 @remote_cli.command('delete-pair', cls=BaseCommand)
@@ -205,26 +300,13 @@ def cli_delete_pair(udid: str):
     pair_record_path.unlink()
 
 
-@remote_cli.command('service', cls=RSDCommand)
-@click.argument('service_name')
-def cli_service(service_provider: RemoteServiceDiscoveryService, service_name: str):
-    """ start an ipython shell for interacting with given service """
-    with service_provider.start_remote_service(service_name) as service:
+async def cli_service_task(service_provider: RemoteServiceDiscoveryService, service_name: str) -> None:
+    async with service_provider.start_remote_service(service_name) as service:
         service.shell()
 
 
-@remote_cli.command('install-wetest-drivers', cls=BaseCommand)
-@sudo_required
-def cli_install_wetest_drivers() -> None:
-    """ install WeTests drivers (windows-only) """
-    import pywintunx_pmd3
-    pywintunx_pmd3.install_wetest_driver()
-
-
-@remote_cli.command('uninstall-wetest-drivers', cls=BaseCommand)
-@sudo_required
-def cli_uninstall_wetest_drivers() -> None:
-    """ uninstall WeTests drivers (windows-only) """
-    import pywintunx_pmd3
-    pywintunx_pmd3.uninstall_wetest_driver()
-    pywintunx_pmd3.delete_driver()
+@remote_cli.command('service', cls=RSDCommand)
+@click.argument('service_name')
+def cli_service(service_provider: RemoteServiceDiscoveryService, service_name: str) -> None:
+    """ start an ipython shell for interacting with given service """
+    asyncio.run(cli_service_task(service_provider, service_name), debug=True)

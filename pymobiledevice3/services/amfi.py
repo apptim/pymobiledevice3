@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import logging
+import time
 
 import construct
 
@@ -49,14 +50,29 @@ class AmfiService:
         except ConnectionAbortedError:
             self._logger.debug('device disconnected, awaiting reconnect')
 
-        while True:
+        """
+            Workaround to solve:
+            "OSError: [WinError 10048] Only one usage of each socket address 
+            (protocol/network address/port) is normally permitted" error
+            https://github.com/doronz88/pymobiledevice3/issues/428
+
+            We 
+        """
+        retries = 0
+        max_retries = 60
+        after_reset_lockdown = None
+        while not after_reset_lockdown and retries <= max_retries:
             try:
                 self._lockdown = create_using_usbmux(self._lockdown.udid)
                 break
             except (NoDeviceConnectedError, ConnectionFailedError, BadDevError, OSError, construct.core.StreamError):
                 pass
 
-        self.enable_developer_mode_post_restart()
+            retries = retries + 1
+            time.sleep(1)
+
+        # We want the user to decide to "Turn on" or "Cancel" after the device has restarted
+        # self.enable_developer_mode_post_restart()
 
     def enable_developer_mode_post_restart(self):
         """ answer the prompt that appears after the restart with "yes" """

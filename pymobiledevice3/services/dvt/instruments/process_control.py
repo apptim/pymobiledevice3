@@ -1,6 +1,6 @@
 import dataclasses
 import typing
-
+from pymobiledevice3.exceptions import DvtException, DeviceLockedError
 from pymobiledevice3.osu.os_utils import get_os_utils
 from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
 from pymobiledevice3.services.remote_server import MessageAux
@@ -67,9 +67,16 @@ class ProcessControl:
         if extra_options:
             options.update(extra_options)
         args = MessageAux().append_obj('').append_obj(bundle_id).append_obj(environment).append_obj(
-            arguments).append_obj(options)
-        self._channel.launchSuspendedProcessWithDevicePath_bundleIdentifier_environment_arguments_options_(args)
-        result = self._channel.receive_plist()
+            arguments).append_obj({
+                'StartSuspendedKey': start_suspended,
+                'KillExisting': kill_existing,
+            })
+        try:
+            self._channel.launchSuspendedProcessWithDevicePath_bundleIdentifier_environment_arguments_options_(args)
+            result = self._channel.receive_plist()
+        except DvtException as exc:
+            error = exc.args[0]["NSLocalizedFailureReason"]
+            raise DeviceLockedError() if "the device was not, or could not be, unlocked" in error else error
         assert result
         return result
 

@@ -13,7 +13,7 @@ __all__ = [
     'NoDeviceSelectedError', 'MessageNotSupportedError', 'InvalidServiceError', 'InspectorEvaluateError',
     'LaunchingApplicationError', 'BadCommandError', 'BadDevError', 'ConnectionFailedError', 'CoreDeviceError',
     'AccessDeniedError', 'RSDRequiredError', 'SysdiagnoseTimeoutError', 'GetProhibitedError',
-    'FeatureNotSupportedError', 'OSNotSupportedError', 'DeprecationError', 'NotEnoughDiskSpaceError'
+    'FeatureNotSupportedError', 'OSNotSupportedError', 'DeprecationError', 'NotEnoughDiskSpaceError', 'DeviceLockedError'
 ]
 
 from typing import List, Optional
@@ -225,7 +225,10 @@ class DeveloperModeError(PyMobileDevice3Exception):
 
 class LockdownError(PyMobileDevice3Exception):
     """ lockdown general error """
-    pass
+
+    def __init__(self, message: str, identifier: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.identifier = identifier
 
 
 class GetProhibitedError(LockdownError):
@@ -383,3 +386,8 @@ class FeatureNotSupportedError(SupportError):
     def __init__(self, os_name, feature):
         super().__init__(os_name)
         self.feature = feature
+
+
+class DeviceLockedError(PyMobileDevice3Exception):
+    """ The device is locked """
+    pass
