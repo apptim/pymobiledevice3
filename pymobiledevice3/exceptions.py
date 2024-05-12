@@ -12,7 +12,7 @@ __all__ = [
     'DeveloperModeError', 'ProfileError', 'IRecvError', 'IRecvNoDeviceConnectedError',
     'NoDeviceSelectedError', 'MessageNotSupportedError', 'InvalidServiceError', 'InspectorEvaluateError',
     'LaunchingApplicationError', 'BadCommandError', 'BadDevError', 'ConnectionFailedError', 'CoreDeviceError',
-    'AccessDeniedError', 'RSDRequiredError', 'HostOSVersionNotSupportedError', 'DeviceLockedError'
+    'AccessDeniedError', 'RSDRequiredError', 'HostOSVersionNotSupportedError', 'DeviceLockedError', 'SysdiagnoseTimeoutError'
 ]
 
 from typing import List, Optional
