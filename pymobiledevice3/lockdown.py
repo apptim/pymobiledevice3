@@ -54,15 +54,21 @@ def _reconnect_on_remote_close(f):
     transmitted). When this happens, we'll attempt to reconnect.
     """
 
+    def _reconnect(self: 'LockdownClient'):
+        self._reestablish_connection()
+        self.validate_pairing()
+
     @wraps(f)
     def _inner_reconnect_on_remote_close(*args, **kwargs):
         try:
             return f(*args, **kwargs)
         except (BrokenPipeError, ConnectionTerminatedError):
-            self: LockdownClient = args[0]
-
-            self._reestablish_connection()
-            self.validate_pairing()
+            _reconnect(args[0])
+            return f(*args, **kwargs)
+        except ConnectionAbortedError:
+            if sys.platform != 'win32':
+                raise
+            _reconnect(args[0])
             return f(*args, **kwargs)
 
     return _inner_reconnect_on_remote_close
