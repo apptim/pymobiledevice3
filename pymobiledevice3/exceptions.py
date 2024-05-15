@@ -12,7 +12,7 @@ __all__ = [
     'DeveloperModeError', 'ProfileError', 'IRecvError', 'IRecvNoDeviceConnectedError',
     'NoDeviceSelectedError', 'MessageNotSupportedError', 'InvalidServiceError', 'InspectorEvaluateError',
     'LaunchingApplicationError', 'BadCommandError', 'BadDevError', 'ConnectionFailedError', 'CoreDeviceError',
-    'AccessDeniedError', 'RSDRequiredError', 'HostOSVersionNotSupportedError', 'DeviceLockedError', 'SysdiagnoseTimeoutError',
+    'AccessDeniedError', 'RSDRequiredError', 'OSNotSupportedError', 'DeviceLockedError', 'SysdiagnoseTimeoutError',
     'GetProhibitedError'
 ]
 
@@ -360,13 +360,16 @@ class RSDRequiredError(PyMobileDevice3Exception):
     """ The requested action requires an RSD object """
     pass
 
+
 class SysdiagnoseTimeoutError(PyMobileDevice3Exception, TimeoutError):
     """ Timeout collecting new sysdiagnose archive """
     pass
 
-class HostOSVersionNotSupportedError(PyMobileDevice3Exception):
+
+class OSNotSupportedError(PyMobileDevice3Exception):
     """ The host OS version is not supported """
     pass
+
 
 class DeviceLockedError(PyMobileDevice3Exception):
     """ The device is locked """
