@@ -366,13 +366,14 @@ class SysdiagnoseTimeoutError(PyMobileDevice3Exception, TimeoutError):
     pass
 
 
-class OSNotSupportedError(PyMobileDevice3Exception):
+class SupportError(PyMobileDevice3Exception):
+    def __init__(self, os_name):
+        self.os_name = os_name
+        super().__init__()
+
+
+class OSNotSupportedError(SupportError):
     """ The host OS version is not supported """
-    pass
-
-
-class DeviceLockedError(PyMobileDevice3Exception):
-    """ The device is locked """
     pass
 
 
@@ -382,3 +383,9 @@ class FeatureNotSupportedError(SupportError):
     def __init__(self, os_name, feature):
         super().__init__(os_name)
         self.feature = feature
+
+
+class DeviceLockedError(PyMobileDevice3Exception):
+    """ The device is locked """
+    pass
+
