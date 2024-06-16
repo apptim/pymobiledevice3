@@ -6,10 +6,12 @@ import click
 import coloredlogs
 
 from pymobiledevice3.exceptions import AccessDeniedError, ConnectionFailedToUsbmuxdError, DeprecationError, \
-    DeveloperModeError, DeveloperModeIsNotEnabledError, DeviceHasPasscodeSetError, DeviceNotFoundError, InternalError, \
-    InvalidServiceError, MessageNotSupportedError, MissingValueError, NoDeviceConnectedError, NoDeviceSelectedError, \
-    NotEnoughDiskSpaceError, NotPairedError, PairingDialogResponsePendingError, PasswordRequiredError, \
-    RSDRequiredError, SetProhibitedError, TunneldConnectionError, UserDeniedPairingError
+    DeveloperModeError, DeveloperModeIsNotEnabledError, DeviceHasPasscodeSetError, DeviceNotFoundError, \
+    FeatureNotSupportedError, InternalError, InvalidServiceError, MessageNotSupportedError, MissingValueError, \
+    NoDeviceConnectedError, NoDeviceSelectedError, NotEnoughDiskSpaceError, NotPairedError, OSNotSupportedError, \
+    PairingDialogResponsePendingError, PasswordRequiredError, RSDRequiredError, SetProhibitedError, \
+    TunneldConnectionError, UserDeniedPairingError
+from pymobiledevice3.osu.os_utils import get_os_utils
 
 coloredlogs.install(level=logging.INFO)
 
@@ -124,9 +126,16 @@ def main() -> None:
     except DeveloperModeIsNotEnabledError:
         logger.error('Developer Mode is disabled. You can try to enable it using: '
                      'python3 -m pymobiledevice3 amfi enable-developer-mode')
-    except InvalidServiceError:
-        if 'developer' in sys.argv and '--tunnel' not in sys.argv:
-            sys.argv += ['--tunnel', '']
+    except (InvalidServiceError, RSDRequiredError) as e:
+        should_retry_over_tunneld = False
+        if isinstance(e, RSDRequiredError):
+            logger.warning('Trying again over tunneld since RSD is required for this command')
+            should_retry_over_tunneld = True
+        elif (e.identifier is not None) and ('developer' in sys.argv) and ('--tunnel' not in sys.argv):
+            logger.warning('Trying again over tunneld since it is a developer command')
+            should_retry_over_tunneld = True
+        if should_retry_over_tunneld:
+            sys.argv += ['--tunnel', e.identifier]
             return main()
         logger.error(INVALID_SERVICE_MESSAGE)
     except NoDeviceSelectedError:
@@ -134,10 +143,7 @@ def main() -> None:
     except PasswordRequiredError:
         logger.error('Device is password protected. Please unlock and retry')
     except AccessDeniedError:
-        if sys.platform == 'win32':
-            logger.error('This command requires admin privileges. Consider retrying with "run-as administrator".')
-        else:
-            logger.error('This command requires root privileges. Consider retrying with "sudo".')
+        logger.error(get_os_utils().access_denied_error)
     except BrokenPipeError:
         traceback.print_exc()
     except TunneldConnectionError:
@@ -148,11 +154,16 @@ def main() -> None:
         logger.error(f'Device not found: {e.udid}')
     except NotEnoughDiskSpaceError:
         logger.error('Not enough disk space')
-    except RSDRequiredError:
-        logger.error('The requested operation requires an RSD instance. For more information see:\n'
-                     'https://github.com/doronz88/pymobiledevice3?tab=readme-ov-file#working-with-developer-tools-ios--170')
     except DeprecationError:
         logger.error('failed to query MobileGestalt, MobileGestalt deprecated (iOS >= 17.4).')
+    except OSNotSupportedError as e:
+        logger.error(
+            f'Unsupported OS - {e.os_name}. To add support, consider contributing at '
+            f'https://github.com/doronz88/pymobiledevice3.')
+    except FeatureNotSupportedError as e:
+        logger.error(
+            f'Missing implementation of `{e.feature}` on `{e.os_name}`. To add support, consider contributing at '
+            f'https://github.com/doronz88/pymobiledevice3.')
 
 
 if __name__ == '__main__':

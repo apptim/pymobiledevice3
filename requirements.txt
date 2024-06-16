@@ -42,3 +42,8 @@ pywintunx-pmd3>=1.0.2 ; platform_system == "Windows"
 aiofiles
 prompt_toolkit
 sslpsk-pmd3>=1.0.3
+python-pcapng>=2.1.1
+
+# TODO: temporary workaround until python-editor, sub-dep of inquirer3, is 3.12 friendly
+# https://github.com/python/cpython/issues/92584
+setuptools>=66.1; python_version >= '3.12'
