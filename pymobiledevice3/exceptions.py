@@ -13,7 +13,7 @@ __all__ = [
     'NoDeviceSelectedError', 'MessageNotSupportedError', 'InvalidServiceError', 'InspectorEvaluateError',
     'LaunchingApplicationError', 'BadCommandError', 'BadDevError', 'ConnectionFailedError', 'CoreDeviceError',
     'AccessDeniedError', 'RSDRequiredError', 'OSNotSupportedError', 'DeviceLockedError', 'SysdiagnoseTimeoutError',
-    'GetProhibitedError'
+    'GetProhibitedError', 'FeatureNotSupportedError'
 ]
 
 from typing import List, Optional
@@ -374,3 +374,11 @@ class OSNotSupportedError(PyMobileDevice3Exception):
 class DeviceLockedError(PyMobileDevice3Exception):
     """ The device is locked """
     pass
+
+
+class FeatureNotSupportedError(SupportError):
+    """ Feature has not been implemented for OS. """
+
+    def __init__(self, os_name, feature):
+        super().__init__(os_name)
+        self.feature = feature
