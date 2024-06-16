@@ -143,3 +143,16 @@ def lockdown_wifi_connections(service_provider: LockdownClient, state):
     else:
         # enable/disable
         service_provider.enable_wifi_connections = state == 'on'
+
+
+@lockdown_group.command('assistive-touch', cls=Command)
+@click.argument('state', type=click.Choice(['on', 'off']), required=False)
+def lockdown_assistive_touch(service_provider: LockdownClient, state: str) -> None:
+    """ get/set assistive touch icon state (visibility) """
+    if not state:
+        key = 'AssistiveTouchEnabledByiTunes'
+        accessibility_values = service_provider.get_value('com.apple.Accessibility')
+        print_json({key: bool(accessibility_values[key])})
+    else:
+        # enable/disable
+        service_provider.assistive_touch = state == 'on'
