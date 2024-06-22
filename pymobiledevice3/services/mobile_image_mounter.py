@@ -354,7 +354,6 @@ def auto_mount_developer(lockdown: LockdownServiceProvider, xcode: str = None, v
     image_mounter.mount(image_path, signature)
 
 
-
 def auto_mount_personalized(lockdown: LockdownServiceProvider) -> None:
     local_path = get_home_folder() / 'Xcode_iOS_DDI_Personalized'
     local_path.mkdir(parents=True, exist_ok=True)
