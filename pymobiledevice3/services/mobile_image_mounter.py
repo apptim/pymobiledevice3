@@ -301,7 +301,7 @@ class PersonalizedImageMounter(MobileImageMounterService):
         return response['ApImg4Ticket']
 
 
-def auto_mount_developer(lockdown: LockdownServiceProvider, xcode: str = None, version: str = None) -> None:
+def auto_mount_developer(lockdown: LockdownServiceProvider, xcode: str = None, version: str = None, custom_path: str = None) -> None:
     """ auto-detect correct DeveloperDiskImage and mount it """
     if xcode is None:
         # avoid "default"-ing this option, because Windows and Linux won't have this path
@@ -333,12 +333,26 @@ def auto_mount_developer(lockdown: LockdownServiceProvider, xcode: str = None, v
         if developer_disk_image is None:
             raise DeveloperDiskImageNotFoundError()
 
-        # write it filesystem
-        developer_disk_image_dir.mkdir(exist_ok=True, parents=True)
+        """
+            Try to write it to Xcode folder, 
+            if it fails due to permissions, write it to the custom path
+        """
+        try:
+            developer_disk_image_dir.mkdir(exist_ok=True, parents=True)
+        except PermissionError as e:
+            if custom_path:
+                developer_disk_image_dir = Path(custom_path) / f'{version}'
+                image_path = developer_disk_image_dir / 'DeveloperDiskImage.dmg'
+                signature = image_path.with_suffix('.signature')
+                developer_disk_image_dir.mkdir(exist_ok=True, parents=True)
+            else:
+                raise e
+
         image_path.write_bytes(developer_disk_image.image)
         signature.write_bytes(developer_disk_image.signature)
 
     image_mounter.mount(image_path, signature)
+
 
 
 def auto_mount_personalized(lockdown: LockdownServiceProvider) -> None:
@@ -361,9 +375,9 @@ def auto_mount_personalized(lockdown: LockdownServiceProvider) -> None:
     PersonalizedImageMounter(lockdown=lockdown).mount(image, build_manifest, trustcache)
 
 
-def auto_mount(lockdown: LockdownServiceProvider, xcode: str = None, version: str = None) -> None:
+def auto_mount(lockdown: LockdownServiceProvider, xcode: str = None, version: str = None, custom_path: str = None) -> None:
     if Version(lockdown.product_version) < Version('17.0'):
-        auto_mount_developer(lockdown, xcode=xcode, version=version)
+        auto_mount_developer(lockdown, xcode=xcode, version=version, custom_path=custom_path)
     else:
         # Windows not supported yet
         if sys.platform != "darwin":
