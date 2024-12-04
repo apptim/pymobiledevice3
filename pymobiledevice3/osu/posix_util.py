@@ -88,7 +88,7 @@ class Linux(Posix):
         if sudo_user:
             try:
                 return Path(f'~{sudo_user}').expanduser()
-            except KeyError:
+            except RuntimeError:
                 # Fallback if user does not exist
                 return Path.home()
         else:
