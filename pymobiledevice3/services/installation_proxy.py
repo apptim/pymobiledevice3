@@ -3,7 +3,7 @@ from enum import Enum
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Callable, Optional
+from typing import Callable, Optional, List, Mapping
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from parameter_decorators import str_to_path
