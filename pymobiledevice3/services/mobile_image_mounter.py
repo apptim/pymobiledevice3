@@ -385,9 +385,9 @@ async def auto_mount_personalized(lockdown: LockdownServiceProvider) -> None:
     await PersonalizedImageMounter(lockdown=lockdown).mount(image, build_manifest, trustcache)
 
 
-def auto_mount(lockdown: LockdownServiceProvider, xcode: str = None, version: str = None, custom_path: str = None) -> None:
+def auto_mount(lockdown: LockdownServiceProvider, xcode: str = None, version: str = None) -> None:
     if Version(lockdown.product_version) < Version('17.0'):
-        auto_mount_developer(lockdown, xcode=xcode, version=version, custom_path=custom_path)
+        auto_mount_developer(lockdown, xcode=xcode, version=version)
     else:
         # Windows not supported yet
         if sys.platform != "darwin":
