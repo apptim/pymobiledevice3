@@ -1,7 +1,8 @@
 import json
 import typing
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, IntEnum
+from typing import Generator
 
 from packaging.version import Version
 
@@ -11,7 +12,7 @@ from pymobiledevice3.services.remote_server import MessageAux, RemoteServer
 
 
 class SerializedObject:
-    def __init__(self, fields: typing.Mapping):
+    def __init__(self, fields: dict):
         self._fields = fields
 
 
@@ -24,8 +25,52 @@ class AXAuditInspectorFocus_v1(SerializedObject):
         return self._fields.get('CaptionTextValue_v1')
 
     @property
+    def spoken_description(self) -> str:
+        return self._fields.get('SpokenDescriptionValue_v1')
+
+    @property
     def element(self) -> bytes:
         return self._fields.get('ElementValue_v1')
+
+    @property
+    def platform_identifier(self) -> str:
+        """Converts the element bytes to a hexadecimal string."""
+        return self.element.identifier.hex().upper()
+
+    @property
+    def estimated_uid(self) -> str:
+        """Generates a UID from the platform identifier."""
+        hex_value = self.platform_identifier
+
+        if len(hex_value) % 2 != 0:
+            raise ValueError("Hex value length must be even.")
+
+        hex_bytes = bytes.fromhex(hex_value)
+
+        if len(hex_bytes) < 16:
+            raise ValueError("Hex value must contain at least 16 bytes.")
+
+        # Extract TimeLow bytes (indexes 12 to 15)
+        time_low_bytes = hex_bytes[12:16]
+        time_low = time_low_bytes.hex().upper()
+
+        # Extract ClockSeq bytes (indexes 0 to 1)
+        clock_seq_bytes = hex_bytes[0:2]
+        clock_seq = clock_seq_bytes.hex().upper()
+
+        # Construct UID with placeholder values for unused parts
+        uid = f"{time_low}-0000-0000-{clock_seq}-000000000000"
+
+        return uid
+
+    def to_dict(self) -> dict:
+        """Serializes the focus element into a dictionary."""
+        return {
+            'platform_identifier': self.platform_identifier,
+            'estimated_uid': self.estimated_uid,
+            'caption': self.caption,
+            'spoken_description': self.spoken_description
+        }
 
     def __str__(self):
         return f'<Focused ElementCaption: {self.caption}>'
@@ -37,7 +82,7 @@ class AXAuditElement_v1(SerializedObject):
 
     @property
     def identifier(self) -> bytes:
-        return self._fields['PlatformElementValue_v1'].NSdata
+        return self._fields['PlatformElementValue_v1']
 
     def __repr__(self):
         return f'<Element: {self.identifier}>'
@@ -74,9 +119,33 @@ class AXAuditDeviceSetting_v1(SerializedObject):
         return f'<AXAuditDeviceSetting_v1 {self.key} = {self.value}>'
 
 
+class AuditType(IntEnum):
+    DYNAMIC_TEXT = 3001
+    DYNAMIC_TEXT_ALT = 3002
+    TEXT_CLIPPED = 3003
+    ELEMENT_DETECTION = 1000
+    SUFFICIENT_ELEMENT_DESCRIPTION = 5000
+    HIT_REGION = 100
+    CONTRAST = 12
+    CONTRAST_ALT = 13
+
+
+AUDIT_TYPE_DESCRIPTIONS = {
+    AuditType.DYNAMIC_TEXT: 'testTypeDynamicText',
+    AuditType.DYNAMIC_TEXT_ALT: 'testTypeDynamicText',
+    AuditType.TEXT_CLIPPED: 'testTypeTextClipped',
+    AuditType.ELEMENT_DETECTION: 'testTypeElementDetection',
+    AuditType.SUFFICIENT_ELEMENT_DESCRIPTION: 'testTypeSufficientElementDescription',
+    AuditType.HIT_REGION: 'testTypeHitRegion',
+    AuditType.CONTRAST: 'testTypeContrast',
+    AuditType.CONTRAST_ALT: 'testTypeContrast'
+}
+
+
 class AXAuditIssue_v1(SerializedObject):
     FIELDS = ('ElementRectValue_v1', 'IssueClassificationValue_v1',
-              'ElementRectValue_v1', 'FontSizeValue_v1', 'MLGeneratedDescriptionValue_v1')
+              'FontSizeValue_v1', 'MLGeneratedDescriptionValue_v1', 'ElementLongDescExtraInfo_v1',
+              'BackgroundColorValue_v1', 'ForegroundColorValue_v1')
 
     def __init__(self, fields):
         super().__init__(fields)
@@ -91,25 +160,44 @@ class AXAuditIssue_v1(SerializedObject):
 
     @property
     def issue_type(self) -> typing.Any:
-        if self._fields['IssueClassificationValue_v1'] in AUDIT_TYPES:
-            return AUDIT_TYPES[self._fields['IssueClassificationValue_v1']]
+        issue_classification = self._fields['IssueClassificationValue_v1']
+        if issue_classification in AUDIT_TYPE_DESCRIPTIONS:
+            return AUDIT_TYPE_DESCRIPTIONS[AuditType(issue_classification)]
         else:
-            return self._fields['IssueClassificationValue_v1']
+            return issue_classification
 
     @property
     def ml_generated_description(self) -> typing.Any:
         return self._fields['MLGeneratedDescriptionValue_v1']
 
     @property
+    def long_description_extra_info(self) -> typing.Any:
+        return self._fields['ElementLongDescExtraInfo_v1']
+
+    @property
     def font_size(self) -> typing.Any:
         return self._fields['FontSizeValue_v1']
 
-    def json(self) -> typing.Mapping:
-        resp = {}
-        resp['element_rect_value'] = self.rect
-        resp['issue_classification'] = self.issue_type
-        resp['font_size'] = self.font_size
-        resp['ml_generated_description'] = self.ml_generated_description
+    @property
+    def foreground_color(self) -> typing.Any:
+        return self._fields['ForegroundColorValue_v1']
+
+    @property
+    def background_color(self) -> typing.Any:
+        return self._fields['BackgroundColorValue_v1']
+
+    def json(self) -> dict:
+        resp = {
+            'element_rect_value': self.rect,
+            'issue_classification': self.issue_type,
+            'font_size': self.font_size,
+            'ml_generated_description': self.ml_generated_description,
+            'long_description_extra_info': self.long_description_extra_info
+        }
+        # Include foreground and background colors when issue type is 'testTypeContrast'
+        if self._fields['IssueClassificationValue_v1'] in {AuditType.CONTRAST, AuditType.CONTRAST_ALT}:
+            resp['foreground_color'] = self.foreground_color
+            resp['background_color'] = self.background_color
         return resp
 
     def __str__(self) -> str:
@@ -123,15 +211,6 @@ SERIALIZABLE_OBJECTS = {
     'AXAuditInspectorSection_v1': AXAuditInspectorSection_v1,
     'AXAuditElementAttribute_v1': AXAuditElementAttribute_v1,
     'AXAuditIssue_v1': AXAuditIssue_v1
-}
-
-AUDIT_TYPES = {
-    3001: 'testTypeDynamicText',
-    3003: 'testTypeTextClipped',
-    1000: 'testTypeElementDetection',
-    5000: 'testTypeSufficientElementDescription',
-    100: 'testTypeHitRegion',
-    13: 'testTypeContrast'
 }
 
 
@@ -184,11 +263,11 @@ class AccessibilityAudit(RemoteServer):
             self.recv_plist()
 
     @property
-    def capabilities(self) -> typing.List[str]:
+    def capabilities(self) -> list[str]:
         self.broadcast.deviceCapabilities()
         return self.recv_plist()[0]
 
-    def run_audit(self, value: typing.List) -> typing.List[AXAuditIssue_v1]:
+    def run_audit(self, value: list) -> list[AXAuditIssue_v1]:
         if self.product_version >= Version('15.0'):
             self.broadcast.deviceBeginAuditTypes_(MessageAux().append_obj(value))
         else:
@@ -208,7 +287,7 @@ class AccessibilityAudit(RemoteServer):
         return deserialize_object(self.recv_plist()[0])
 
     @property
-    def settings(self) -> typing.List[AXAuditDeviceSetting_v1]:
+    def settings(self) -> list[AXAuditDeviceSetting_v1]:
         self.broadcast.deviceAccessibilitySettings()
         return deserialize_object(self.recv_plist()[0])
 
@@ -335,3 +414,30 @@ class AccessibilityAudit(RemoteServer):
         self.broadcast.deviceUpdateAccessibilitySetting_withValue_(
             MessageAux().append_obj(setting).append_obj({'ObjectType': 'passthrough', 'Value': value}),
             expects_reply=False)
+
+    def reset_settings(self) -> None:
+        self.broadcast.deviceResetToDefaultAccessibilitySettings()
+
+    def iter_elements(self) -> Generator[AXAuditInspectorFocus_v1, None, None]:
+        iterator = self.iter_events()
+
+        # every focus change is expected publish a "hostInspectorCurrentElementChanged:"
+        self.move_focus_next()
+
+        visited_identifiers = set()
+
+        for event in iterator:
+            if event.name != 'hostInspectorCurrentElementChanged:':
+                # ignore any other events
+                continue
+
+            # each such event should contain exactly one element that became in focus
+            current_item = event.data[0]
+            current_identifier = current_item.platform_identifier
+
+            if current_identifier in visited_identifiers:
+                break  # Exit if we've seen this element before (loop detected)
+
+            yield current_item
+            visited_identifiers.add(current_identifier)
+            self.move_focus_next()

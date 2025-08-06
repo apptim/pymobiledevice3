@@ -6,14 +6,13 @@ from pymobiledevice3.services.mobile_activation import MobileActivationService
 
 
 @click.group()
-def cli():
-    """ cli """
+def cli() -> None:
     pass
 
 
 @cli.group()
-def activation():
-    """ activation options """
+def activation() -> None:
+    """ Perform iCloud activation/deactivation or query the current state """
     pass
 
 

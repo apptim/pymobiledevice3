@@ -1,9 +1,10 @@
+import datetime
 import logging
 from abc import abstractmethod
-from typing import Optional
+from typing import Any, Optional
 
 from pymobiledevice3.exceptions import StartServiceError
-from pymobiledevice3.service_connection import LockdownServiceConnection
+from pymobiledevice3.service_connection import ServiceConnection
 
 
 class LockdownServiceProvider:
@@ -26,17 +27,30 @@ class LockdownServiceProvider:
     def developer_mode_status(self) -> bool:
         pass
 
+    @property
     @abstractmethod
-    def start_lockdown_service(self, name: str, include_escrow_bag: bool = False) -> LockdownServiceConnection:
+    def date(self) -> datetime.datetime:
+        pass
+
+    @abstractmethod
+    def set_language(self, language: str) -> None:
+        pass
+
+    @abstractmethod
+    def start_lockdown_service(self, name: str, include_escrow_bag: bool = False) -> ServiceConnection:
         pass
 
     @abstractmethod
     async def aio_start_lockdown_service(
-            self, name: str, include_escrow_bag: bool = False) -> LockdownServiceConnection:
+            self, name: str, include_escrow_bag: bool = False) -> ServiceConnection:
+        pass
+
+    @abstractmethod
+    def get_value(self, domain: Optional[str] = None, key: Optional[str] = None) -> Any:
         pass
 
     def start_lockdown_developer_service(
-            self, name: str, include_escrow_bag: bool = False) -> LockdownServiceConnection:
+            self, name: str, include_escrow_bag: bool = False) -> ServiceConnection:
         try:
             return self.start_lockdown_service(name, include_escrow_bag=include_escrow_bag)
         except StartServiceError:

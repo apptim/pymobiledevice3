@@ -1,29 +1,62 @@
 import logging
-from functools import cached_property
+from typing import Any, Optional
 
 from pymobiledevice3 import usbmux
 from pymobiledevice3.exceptions import ConnectionFailedError, NoDeviceConnectedError
+from pymobiledevice3.lockdown import DEFAULT_LABEL
 from pymobiledevice3.restore.restore_options import RestoreOptions
-from pymobiledevice3.service_connection import LockdownServiceConnection
+from pymobiledevice3.service_connection import ServiceConnection
+from pymobiledevice3.usbmux import select_devices_by_connection_type
+
+logger = logging.getLogger(__name__)
 
 
 class RestoredClient:
-    DEFAULT_CLIENT_NAME = 'pyMobileDevice'
+    DEFAULT_CLIENT_NAME = 'pymobiledevice3'
     SERVICE_PORT = 62078
 
-    def __init__(self, udid=None, client_name=DEFAULT_CLIENT_NAME):
-        self.logger = logging.getLogger(__name__)
-        self.udid = self._get_or_verify_udid(udid)
-        self.service = LockdownServiceConnection.create_using_usbmux(self.udid, self.SERVICE_PORT,
-                                                                     connection_type='USB')
-        self.label = client_name
-        self.query_type = self.service.send_recv_plist({'Request': 'QueryType'})
-        self.version = self.query_type.get('RestoreProtocolVersion')
+    @classmethod
+    async def create(cls, ecid: str) -> 'RestoredClient':
+        for mux_device in select_devices_by_connection_type('USB'):
+            logger.debug(f'Iterating: {mux_device}')
+            service = ServiceConnection.create_using_usbmux(mux_device.serial, cls.SERVICE_PORT,
+                                                            connection_type=mux_device.connection_type)
+            await service.aio_start()
 
-        assert self.query_type.get('Type') == 'com.apple.mobile.restored', f'wrong query type: {self.query_type}'
+            query_type = await service.aio_send_recv_plist({'Request': 'QueryType'})
+            version = query_type.get('RestoreProtocolVersion')
+            logger.debug(f'RestoreProtocolVersion: {version}')
+
+            if query_type.get('Type') != 'com.apple.mobile.restored':
+                logger.debug(f'Skipping: {mux_device.serial} as its not a restored device')
+                await service.aio_close()
+                continue
+
+            restored_client = cls(mux_device.serial, version, service)
+            await restored_client._connect()
+
+            if restored_client.ecid != ecid:
+                logger.debug(f'Skipping: {restored_client.ecid} as its not the right ECID ({restored_client.ecid} '
+                             f'instead of {ecid})')
+                await service.aio_close()
+                continue
+
+            return restored_client
+        raise NoDeviceConnectedError()
+
+    def __init__(self, udid: str, version: str, service: ServiceConnection) -> None:
+        self.udid = udid
+        self.version = version
+        self.service = service
+        self.label = DEFAULT_LABEL
+
+    async def _connect(self) -> None:
+        self.hardware_info = (await self.query_value('HardwareInfo'))['HardwareInfo']
+        self.ecid = self.hardware_info['UniqueChipID']
+        self.saved_debug_info = (await self.query_value('SavedDebugInfo'))['SavedDebugInfo']
 
     @staticmethod
-    def _get_or_verify_udid(udid=None):
+    def _get_or_verify_udid(udid: Optional[str] = None) -> str:
         device = usbmux.select_device(udid)
         if device is None:
             if udid:
@@ -32,37 +65,29 @@ class RestoredClient:
                 raise NoDeviceConnectedError()
         return device.serial
 
-    def query_value(self, key=None):
+    async def query_value(self, key: Optional[str] = None) -> Any:
         req = {'Request': 'QueryValue', 'Label': self.label}
 
         if key:
             req['QueryKey'] = key
 
-        return self.service.send_recv_plist(req)
+        return await self.service.aio_send_recv_plist(req)
 
-    def start_restore(self, opts: RestoreOptions = None):
+    async def start_restore(self, opts: Optional[RestoreOptions] = None) -> None:
         req = {'Request': 'StartRestore', 'Label': self.label, 'RestoreProtocolVersion': self.version}
 
         if opts is not None:
             req['RestoreOptions'] = opts.to_dict()
 
-        self.logger.debug(f'start_restore request: {req}')
+        logger.debug(f'start_restore request: {req}')
 
-        return self.service.send_plist(req)
+        return await self.service.aio_send_plist(req)
 
-    def reboot(self):
-        return self.service.send_recv_plist({'Request': 'Reboot', 'Label': self.label})
+    async def reboot(self) -> dict:
+        return await self.service.aio_send_recv_plist({'Request': 'Reboot', 'Label': self.label})
 
-    def send(self, message):
-        self.service.send_plist(message)
+    async def send(self, message: dict) -> None:
+        await self.service.aio_send_plist(message)
 
-    def recv(self):
-        return self.service.recv_plist()
-
-    @cached_property
-    def hardware_info(self):
-        return self.query_value('HardwareInfo')['HardwareInfo']
-
-    @property
-    def saved_debug_info(self):
-        return self.query_value('SavedDebugInfo')['SavedDebugInfo']
+    async def recv(self) -> dict:
+        return await self.service.aio_recv_plist()

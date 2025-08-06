@@ -4,7 +4,6 @@ import signal
 import socket
 import struct
 from pathlib import Path
-from typing import List, Tuple
 
 from ifaddr import get_adapters
 
@@ -22,7 +21,7 @@ class Posix(OsUtils):
         return os.geteuid() == 0
 
     @property
-    def usbmux_address(self) -> Tuple[str, int]:
+    def usbmux_address(self) -> tuple[str, int]:
         return MuxConnection.USBMUXD_PIPE, socket.AF_UNIX
 
     @property
@@ -33,7 +32,7 @@ class Posix(OsUtils):
     def access_denied_error(self) -> str:
         return 'This command requires root privileges. Consider retrying with "sudo".'
 
-    def get_ipv6_ips(self) -> List[str]:
+    def get_ipv6_ips(self) -> list[str]:
         return [f'{adapter.ips[0].ip[0]}%{adapter.nice_name}' for adapter in get_adapters() if
                 adapter.ips[0].is_IPv6 and not adapter.nice_name.startswith('tun')]
 
@@ -84,17 +83,16 @@ class Linux(Posix):
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, max_fails)
 
     def get_homedir(self) -> Path:
-        sudo_user = os.environ.get('SUDO_USER')
-        if sudo_user:
-            try:
-                return Path(f'~{sudo_user}').expanduser()
-            except RuntimeError:
-                # Fallback if user does not exist
-                return Path.home()
-        else:
-            return Path.home()
+        return Path('~' + os.environ.get('SUDO_USER', '')).expanduser()
+
 
 class Cygwin(Posix):
     @property
-    def usbmux_address(self) -> Tuple[str, int]:
+    def usbmux_address(self) -> tuple[str, int]:
+        return MuxConnection.ITUNES_HOST, socket.AF_INET
+
+
+class Wsl(Linux):
+    @property
+    def usbmux_address(self) -> tuple[str, int]:
         return MuxConnection.ITUNES_HOST, socket.AF_INET

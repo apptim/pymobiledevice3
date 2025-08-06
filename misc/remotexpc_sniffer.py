@@ -1,6 +1,6 @@
 import logging
 from pprint import pformat
-from typing import List, MutableMapping, Optional
+from typing import Optional
 
 import click
 import coloredlogs
@@ -12,13 +12,11 @@ from scapy.layers.inet6 import IPv6
 from scapy.packet import Packet
 from scapy.sendrecv import sniff
 
-from pymobiledevice3.remote.core_device_tunnel_service import PairingDataComponentTLVBuf
 from pymobiledevice3.remote.remotexpc import HTTP2_MAGIC
+from pymobiledevice3.remote.tunnel_service import PairingDataComponentTLVBuf
 from pymobiledevice3.remote.xpc_message import XpcWrapper, decode_xpc_object
 
 logger = logging.getLogger()
-
-coloredlogs.install(level=logging.DEBUG)
 
 FRAME_HEADER_SIZE = 9
 
@@ -73,7 +71,7 @@ class TCPStream:
 
 
 class H2Stream(TCPStream):
-    def pop_frames(self) -> List[Frame]:
+    def pop_frames(self) -> list[Frame]:
         """ Pop all available H2Frames """
 
         # If self.data starts with the http/2 magic bytes, pop them off
@@ -98,8 +96,8 @@ class H2Stream(TCPStream):
 
 class RemoteXPCSniffer:
     def __init__(self):
-        self._h2_streams: MutableMapping[str, H2Stream] = {}
-        self._previous_frame_data: MutableMapping[str, bytes] = {}
+        self._h2_streams: dict[str, H2Stream] = {}
+        self._previous_frame_data: dict[str, bytes] = {}
 
     def process_packet(self, packet: Packet) -> None:
         if packet.haslayer(TCP) and packet[TCP].payload:
@@ -204,4 +202,5 @@ def live(iface: str):
 
 
 if __name__ == '__main__':
+    coloredlogs.install(level=logging.DEBUG)
     cli()

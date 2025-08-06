@@ -1,7 +1,7 @@
 import hashlib
 import logging
 import time
-import typing
+from typing import Optional
 from zipfile import ZipFile
 
 from usb import USBError
@@ -12,7 +12,7 @@ from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.restore.base_restore import BaseRestore, Behavior
 from pymobiledevice3.restore.consts import lpol_file
 from pymobiledevice3.restore.device import Device
-from pymobiledevice3.restore.tss import TSSRequest
+from pymobiledevice3.restore.tss import TSSRequest, TSSResponse
 
 RESTORE_VARIANT_ERASE_INSTALL = 'Erase Install (IPSW)'
 RESTORE_VARIANT_UPGRADE_INSTALL = 'Upgrade Install (IPSW)'
@@ -20,8 +20,8 @@ RESTORE_VARIANT_MACOS_RECOVERY_OS = 'macOS Customer'
 
 
 class Recovery(BaseRestore):
-    def __init__(self, ipsw: ZipFile, device: Device, tss: typing.Mapping = None, behavior: Behavior = Behavior.Update):
-        super().__init__(ipsw, device, tss, behavior, logger=logging.getLogger(__name__))
+    def __init__(self, ipsw: ZipFile, device: Device, tss: Optional[dict] = None, behavior: Behavior = Behavior.Update):
+        super().__init__(ipsw, device, tss, behavior)
         self.tss_localpolicy = None
         self.tss_recoveryos_root_ticket = None
         self.restore_boot_args = None
@@ -44,7 +44,7 @@ class Recovery(BaseRestore):
             'ApSupportsImg4': True,
         }
 
-        self.build_identity.populate_tss_request_parameters(parameters)
+        self.populate_tss_request_from_manifest(parameters)
 
         tss = TSSRequest()
         tss.add_common_tags(parameters, overrides)
@@ -55,7 +55,7 @@ class Recovery(BaseRestore):
 
         return tss.img4_create_local_manifest(build_identity=self.build_identity)
 
-    def get_tss_response(self):
+    async def get_tss_response(self) -> TSSResponse:
         # populate parameters
         parameters = dict()
 
@@ -74,11 +74,15 @@ class Recovery(BaseRestore):
         else:
             parameters['ApSupportsImg4'] = False
 
-        self.build_identity.populate_tss_request_parameters(parameters)
+        self.populate_tss_request_from_manifest(parameters)
 
         tss = TSSRequest()
         tss.add_common_tags(parameters)
         tss.add_ap_tags(parameters)
+
+        build_manifest_info = self.build_identity['Info']
+        for manifest_property in build_manifest_info.get('RequestManifestProperties', []):
+            tss.add_tags({manifest_property: build_manifest_info[manifest_property]})
 
         # add personalized parameters
         if self.device.is_image4_supported:
@@ -88,9 +92,9 @@ class Recovery(BaseRestore):
 
         # normal mode; request baseband ticket as well
         if self.device.lockdown is not None:
-            pinfo = self.device.preflight_info
+            pinfo = self.device.firmware_preflight_info
             if pinfo:
-                self.logger.debug('adding preflight info')
+                self.logger.debug('adding firmware preflight info')
 
                 node = pinfo.get('Nonce')
                 if node is not None:
@@ -108,34 +112,35 @@ class Recovery(BaseRestore):
                 if node is not None:
                     parameters['BbSNUM'] = node
 
-                tss.add_baseband_tags(parameters)
+                    # add baseband parameters
+                    tss.add_baseband_tags(parameters)
 
-                euiccchipid = pinfo.get('EUICCChipID')
-                if euiccchipid:
-                    self.logger.debug('adding EUICCChipID info')
-                    parameters['eUICC,ChipID'] = euiccchipid
+                    euiccchipid = pinfo.get('EUICCChipID')
+                    if euiccchipid:
+                        self.logger.debug('adding EUICCChipID info')
+                        parameters['eUICC,ChipID'] = euiccchipid
 
-                    if euiccchipid >= 5:
-                        node = pinfo.get('EUICCCSN')
-                        if node is not None:
-                            parameters['eUICC,EID'] = node
+                        if euiccchipid >= 5:
+                            node = pinfo.get('EUICCCSN')
+                            if node is not None:
+                                parameters['eUICC,EID'] = node
 
-                        node = pinfo.get('EUICCCertIdentifier')
-                        if node is not None:
-                            parameters['eUICC,RootKeyIdentifier'] = node
+                            node = pinfo.get('EUICCCertIdentifier')
+                            if node is not None:
+                                parameters['eUICC,RootKeyIdentifier'] = node
 
-                        node = pinfo.get('EUICCGoldNonce')
-                        if node is not None:
-                            parameters['EUICCGoldNonce'] = node
+                            node = pinfo.get('EUICCGoldNonce')
+                            if node is not None:
+                                parameters['EUICCGoldNonce'] = node
 
-                        node = pinfo.get('EUICCMainNonce')
-                        if node is not None:
-                            parameters['EUICCMainNonce'] = node
+                            node = pinfo.get('EUICCMainNonce')
+                            if node is not None:
+                                parameters['EUICCMainNonce'] = node
 
-                        tss.add_vinyl_tags(parameters)
+                            tss.add_vinyl_tags(parameters)
 
         # send request and grab response
-        return tss.send_receive()
+        return await tss.send_receive()
 
     def get_local_policy_tss_response(self):
         # populate parameters
@@ -159,7 +164,7 @@ class Recovery(BaseRestore):
         else:
             parameters['ApSupportsImg4'] = False
 
-        self.build_identity.populate_tss_request_parameters(parameters)
+        self.populate_tss_request_from_manifest(parameters)
 
         # Add Ap,LocalPolicy
         lpol = {
@@ -205,7 +210,7 @@ class Recovery(BaseRestore):
         else:
             parameters['ApSupportsImg4'] = False
 
-        self.build_identity.populate_tss_request_parameters(parameters)
+        self.populate_tss_request_from_manifest(parameters)
 
         # create basic request
         # Adds @HostPlatformInfo, @VersionInfo, @UUID
@@ -224,17 +229,21 @@ class Recovery(BaseRestore):
 
         return request.send_receive()
 
-    def fetch_tss_record(self):
+    async def fetch_tss_record(self) -> TSSResponse:
         if self.ipsw.build_manifest.build_major > 8:
             if self.device.ap_nonce is None:
                 # the first nonce request with older firmware releases can fail, and it's OK
                 self.logger.info('NOTE: Unable to get nonce from device')
 
-        self.tss = self.get_tss_response()
+        self.tss = await self.get_tss_response()
 
         if self.macos_variant:
             self.tss_localpolicy = self.get_local_policy_tss_response()
             self.tss_recoveryos_root_ticket = self.get_recoveryos_root_ticket_tss_response()
+        else:
+            recovery_variant = self.build_identity['Info'].get('RecoveryVariant')
+            if recovery_variant is not None:
+                self.tss_recoveryos_root_ticket = await self.get_tss_response()
 
         return self.tss
 
@@ -247,7 +256,7 @@ class Recovery(BaseRestore):
             # If Ap,LocalPolicy => Inject an empty policy
             data = lpol_file
 
-        data = self.build_identity.get_component(name, tss=tss, data=data).personalized_data
+        data = self.get_personalized_data(name, data=data, tss=tss)
         self.logger.info(f'Sending {name} ({len(data)} bytes)...')
         self.device.irecv.send_buffer(data)
 
@@ -388,7 +397,7 @@ class Recovery(BaseRestore):
 
         self.send_kernelcache()
 
-    def dfu_enter_recovery(self):
+    async def dfu_enter_recovery(self) -> None:
         self.send_component('iBSS')
         self.reconnect_irecv()
 
@@ -404,7 +413,7 @@ class Recovery(BaseRestore):
 
             if old_nonce != nonce:
                 # Welcome iOS5. We have to re-request the TSS with our nonce.
-                self.tss = self.get_tss_response()
+                self.tss = await self.get_tss_response()
 
             self.device.irecv.set_configuration(1)
 
@@ -437,16 +446,16 @@ class Recovery(BaseRestore):
         self.logger.debug('Waiting for device to reconnect in recovery mode...')
         self.reconnect_irecv(is_recovery=True)
 
-    def boot_ramdisk(self):
+    async def boot_ramdisk(self) -> None:
         if self.tss is None:
             self.logger.info('fetching TSS record')
-            self.fetch_tss_record()
+            await self.fetch_tss_record()
 
         if self.device.lockdown:
             # normal mode
             self.logger.info('going into Recovery')
 
-            # in case lockdown has disconnected while waiting for a ticket
+            # In case lockdown has disconnected while waiting for a ticket
             self.device.lockdown = create_using_usbmux(serial=self.device.lockdown.udid, connection_type='USB')
             self.device.lockdown.enter_recovery()
 
@@ -456,7 +465,7 @@ class Recovery(BaseRestore):
 
         if self.device.irecv.mode == Mode.DFU_MODE:
             # device is currently in DFU mode, place it into recovery mode
-            self.dfu_enter_recovery()
+            await self.dfu_enter_recovery()
 
         elif self.device.irecv.mode.is_recovery:
             # now we load the iBEC

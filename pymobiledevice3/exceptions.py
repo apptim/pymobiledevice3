@@ -2,21 +2,23 @@ __all__ = [
     'PyMobileDevice3Exception', 'DeviceVersionNotSupportedError', 'IncorrectModeError',
     'NotTrustedError', 'PairingError', 'NotPairedError', 'CannotStopSessionError',
     'PasswordRequiredError', 'StartServiceError', 'FatalPairingError', 'NoDeviceConnectedError', 'DeviceNotFoundError',
-    'TunneldConnectionError', 'ConnectionFailedToUsbmuxdError', 'MuxException',
+    'TunneldConnectionError', 'ConnectionFailedToUsbmuxdError', 'MuxException', 'InvalidConnectionError',
     'MuxVersionError', 'ArgumentError', 'AfcException', 'AfcFileNotFoundError', 'DvtException', 'DvtDirListError',
     'NotMountedError', 'AlreadyMountedError', 'UnsupportedCommandError', 'ExtractingStackshotError',
     'ConnectionTerminatedError', 'WirError', 'WebInspectorNotEnabledError', 'RemoteAutomationNotEnabledError',
     'ArbitrationError', 'InternalError', 'DeveloperModeIsNotEnabledError', 'DeviceAlreadyInUseError', 'LockdownError',
     'PairingDialogResponsePendingError', 'UserDeniedPairingError', 'InvalidHostIDError', 'SetProhibitedError',
     'MissingValueError', 'PasscodeRequiredError', 'AmfiError', 'DeviceHasPasscodeSetError', 'NotificationTimeoutError',
-    'DeveloperModeError', 'ProfileError', 'IRecvError', 'IRecvNoDeviceConnectedError',
-    'NoDeviceSelectedError', 'MessageNotSupportedError', 'InvalidServiceError', 'InspectorEvaluateError',
+    'DeveloperModeError', 'ProfileError', 'IRecvError', 'IRecvNoDeviceConnectedError', 'UnrecognizedSelectorError',
+    'MessageNotSupportedError', 'InvalidServiceError', 'InspectorEvaluateError',
     'LaunchingApplicationError', 'BadCommandError', 'BadDevError', 'ConnectionFailedError', 'CoreDeviceError',
-    'AccessDeniedError', 'RSDRequiredError', 'OSNotSupportedError', 'DeviceLockedError', 'SysdiagnoseTimeoutError',
-    'GetProhibitedError', 'FeatureNotSupportedError'
+    'AccessDeniedError', 'RSDRequiredError', 'SysdiagnoseTimeoutError', 'GetProhibitedError',
+    'FeatureNotSupportedError', 'OSNotSupportedError', 'DeprecationError', 'NotEnoughDiskSpaceError',
+    'CloudConfigurationAlreadyPresentError', 'QuicProtocolNotSupportedError', 'RemotePairingCompletedError',
+    'DisableMemoryLimitError', 'DeviceLockedError'
 ]
 
-from typing import List, Optional
+from typing import Optional
 
 
 class PyMobileDevice3Exception(Exception):
@@ -225,6 +227,13 @@ class DeveloperModeError(PyMobileDevice3Exception):
 
 class LockdownError(PyMobileDevice3Exception):
     """ lockdown general error """
+
+    def __init__(self, message: str, identifier: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.identifier = identifier
+
+
+class GetProhibitedError(LockdownError):
     pass
 
 
@@ -279,15 +288,15 @@ class ProfileError(PyMobileDevice3Exception):
     pass
 
 
+class CloudConfigurationAlreadyPresentError(ProfileError):
+    pass
+
+
 class IRecvError(PyMobileDevice3Exception):
     pass
 
 
 class IRecvNoDeviceConnectedError(IRecvError):
-    pass
-
-
-class NoDeviceSelectedError(PyMobileDevice3Exception):
     pass
 
 
@@ -301,7 +310,7 @@ class InvalidServiceError(LockdownError):
 
 class InspectorEvaluateError(PyMobileDevice3Exception):
     def __init__(self, class_name: str, message: str, line: Optional[int] = None, column: Optional[int] = None,
-                 stack: Optional[List[str]] = None):
+                 stack: Optional[list[str]] = None):
         super().__init__()
         self.class_name = class_name
         self.message = message
@@ -358,6 +367,58 @@ class DeprecationError(PyMobileDevice3Exception):
 
 class RSDRequiredError(PyMobileDevice3Exception):
     """ The requested action requires an RSD object """
+
+    def __init__(self, identifier: str) -> None:
+        self.identifier = identifier
+        super().__init__()
+
+
+class SysdiagnoseTimeoutError(PyMobileDevice3Exception, TimeoutError):
+    """ Timeout collecting new sysdiagnose archive """
+    pass
+
+
+class SupportError(PyMobileDevice3Exception):
+    def __init__(self, os_name):
+        self.os_name = os_name
+        super().__init__()
+
+
+class OSNotSupportedError(SupportError):
+    """ Operating system is not supported. """
+    pass
+
+
+class FeatureNotSupportedError(SupportError):
+    """ Feature has not been implemented for OS. """
+
+    def __init__(self, os_name, feature):
+        super().__init__(os_name)
+        self.feature = feature
+
+
+class QuicProtocolNotSupportedError(PyMobileDevice3Exception):
+    """ QUIC tunnel support was removed on iOS 18.2+ """
+    pass
+
+
+class RemotePairingCompletedError(PyMobileDevice3Exception):
+    """
+    Raised upon pairing completion using the `remotepairingdeviced` service (RemoteXPC).
+
+    remotepairingdeviced closes connection after pairing, so client must re-establish it after pairing is
+    completed.
+    """
+    pass
+
+
+class DisableMemoryLimitError(PyMobileDevice3Exception):
+    """ Disabling memory limit fails. """
+    pass
+
+
+class ProtocolError(PyMobileDevice3Exception):
+    """ An unexpected protocol message was received """
     pass
 
 

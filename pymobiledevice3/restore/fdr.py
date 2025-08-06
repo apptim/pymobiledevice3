@@ -8,7 +8,7 @@ from enum import Enum
 
 from pymobiledevice3 import usbmux
 from pymobiledevice3.exceptions import ConnectionFailedError, NoDeviceConnectedError, PyMobileDevice3Exception
-from pymobiledevice3.service_connection import LockdownServiceConnection
+from pymobiledevice3.service_connection import ServiceConnection
 
 CTRL_PORT = 0x43a  # 1082
 CTRLCMD = b'BeginCtrl\0'
@@ -36,8 +36,6 @@ class FDRClient:
     ctrlprotoversion = 2
 
     def __init__(self, type_: fdr_type, udid=None):
-        global conn_port
-
         device = usbmux.select_device(udid)
         if device is None:
             if udid:
@@ -48,12 +46,12 @@ class FDRClient:
         logger.debug('connecting to FDR')
 
         if type_ == fdr_type.FDR_CTRL:
-            self.service = LockdownServiceConnection.create_using_usbmux(
+            self.service = ServiceConnection.create_using_usbmux(
                 device.serial, self.SERVICE_PORT, connection_type='USB'
             )
             self.ctrl_handshake()
         else:
-            self.service = LockdownServiceConnection.create_using_usbmux(device.serial, conn_port, connection_type='USB')
+            self.service = ServiceConnection.create_using_usbmux(device.serial, conn_port, connection_type='USB')
             self.sync_handshake()
 
         logger.debug('FDR connected')
@@ -194,6 +192,7 @@ class FDRClient:
 
 
 def fdr_listener_thread(type_: fdr_type):
+    client = None
     try:
         client = FDRClient(type_)
 

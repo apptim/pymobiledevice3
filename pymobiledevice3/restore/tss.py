@@ -1,27 +1,35 @@
+import asyncio
 import logging
 import plistlib
 import typing
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import asn1
 import requests
-from ipsw_parser.img4 import COMPONENT_FOURCC
 
 from pymobiledevice3.exceptions import PyMobileDevice3Exception
+from pymobiledevice3.restore.img4 import COMPONENT_FOURCC
 from pymobiledevice3.utils import bytes_to_uint, plist_access_path
 
 TSS_CONTROLLER_ACTION_URL = 'http://gs.apple.com/TSS/controller?action=2'
 
-TSS_CLIENT_VERSION_STRING = 'libauthinstall-973.0.1'
+TSS_CLIENT_VERSION_STRING = 'libauthinstall-1033.80.3'
 
 logger = logging.getLogger(__name__)
 
 
-def get_with_or_without_comma(obj: typing.Mapping, k: str, default=None):
+def get_with_or_without_comma(obj: dict, k: str, default=None):
     val = obj.get(k, obj.get(k.replace(',', '')))
     if val is None and default is not None:
         val = default
     return val
+
+
+def is_fw_payload(info: dict[str, typing.Any]) -> bool:
+    return (info.get('IsFirmwarePayload') or info.get('IsSecondaryFirmwarePayload') or info.get('IsFUDFirmware') or
+            info.get('IsLoadedByiBoot') or info.get('IsEarlyAccessFirmware') or info.get('IsiBootEANFirmware') or
+            info.get('IsiBootNonEssentialFirmware'))
 
 
 class TSSResponse(dict):
@@ -48,15 +56,14 @@ class TSSResponse(dict):
 
 class TSSRequest:
     def __init__(self):
-        self._request = {
+        self._request: dict[str, typing.Any] = {
             '@HostPlatformInfo': 'mac',
             '@VersionInfo': TSS_CLIENT_VERSION_STRING,
             '@UUID': str(uuid4()).upper(),
         }
 
     @staticmethod
-    def apply_restore_request_rules(tss_entry: typing.MutableMapping, parameters: typing.MutableMapping,
-                                    rules: typing.List):
+    def apply_restore_request_rules(tss_entry: dict, parameters: dict, rules: list) -> dict:
         for rule in rules:
             conditions_fulfilled = True
             conditions = rule['Conditions']
@@ -98,13 +105,13 @@ class TSSRequest:
                     tss_entry[key] = value
         return tss_entry
 
-    def add_tags(self, parameters: typing.Mapping):
+    def add_tags(self, parameters: dict):
         for key, value in parameters.items():
             if isinstance(value, str) and value.startswith('0x'):
                 value = int(value, 16)
             self._request[key] = value
 
-    def add_common_tags(self, parameters: typing.Mapping, overrides=None):
+    def add_common_tags(self, parameters: dict, overrides=None):
         keys = ('ApECID', 'UniqueBuildID', 'ApChipID', 'ApBoardID', 'ApSecurityDomain')
         for k in keys:
             if k in parameters:
@@ -112,7 +119,7 @@ class TSSRequest:
         if overrides is not None:
             self._request.update(overrides)
 
-    def add_ap_recovery_tags(self, parameters: typing.Mapping, overrides=None):
+    def add_ap_recovery_tags(self, parameters: dict, overrides=None):
         skip_keys = ('BasebandFirmware', 'SE,UpdatePayload', 'BaseSystem', 'ANS', 'Ap,AudioBootChime', 'Ap,CIO',
                      'Ap,RestoreCIO', 'Ap,RestoreTMU', 'Ap,TMU', 'Ap,rOSLogo1', 'Ap,rOSLogo2', 'AppleLogo', 'DCP',
                      'LLB', 'RecoveryMode', 'RestoreANS', 'RestoreDCP', 'RestoreDeviceTree', 'RestoreKernelCache',
@@ -132,9 +139,8 @@ class TSSRequest:
                     logger.debug(f'skipping {key} as it is not trusted')
                     continue
                 info = manifest_entry['Info']
-                if not info['IsFirmwarePayload'] and not info['IsSecondaryFirmwarePayload'] and \
-                        not info['IsFUDFirmware']:
-                    logger.debug(f'skipping {key} as it is neither firmware nor secondary nor FUD firmware payload')
+                if not is_fw_payload(info):
+                    logger.debug(f'skipping {key} as it is not a firmware payload')
                     continue
 
             # copy this entry
@@ -161,7 +167,7 @@ class TSSRequest:
         if overrides:
             self._request.update(overrides)
 
-    def add_timer_tags(self, parameters: typing.Mapping, overrides=None):
+    def add_timer_tags(self, parameters: dict, overrides=None):
         manifest = parameters['Manifest']
 
         # add tags indicating we want to get the Timer ticket
@@ -222,7 +228,7 @@ class TSSRequest:
         if overrides is not None:
             self._request.update(overrides)
 
-    def add_local_policy_tags(self, parameters: typing.Mapping):
+    def add_local_policy_tags(self, parameters: dict):
         self._request['@ApImg4Ticket'] = True
 
         keys_to_copy = (
@@ -236,7 +242,7 @@ class TSSRequest:
                     v = int(v, 16)
                 self._request[k] = v
 
-    def add_vinyl_tags(self, parameters: typing.Mapping, overrides=None):
+    def add_vinyl_tags(self, parameters: dict, overrides=None):
         self._request['@BBTicket'] = True
         self._request['@eUICC,Ticket'] = True
 
@@ -275,13 +281,13 @@ class TSSRequest:
         if overrides is not None:
             self._request.update(overrides)
 
-    def add_ap_tags(self, parameters: typing.Mapping, overrides=None):
+    def add_ap_tags(self, parameters: dict, overrides=None):
         """ loop over components from build manifest """
 
         manifest_node = parameters['Manifest']
 
         # add components to request
-        skipped_keys = ('BasebandFirmware', 'SE,UpdatePayload', 'BaseSystem', 'Diags',)
+        skipped_keys = ('BasebandFirmware', 'SE,UpdatePayload', 'BaseSystem', 'Diags', 'Ap,ExclaveOS')
         for key, manifest_entry in manifest_node.items():
             if key in skipped_keys:
                 continue
@@ -301,10 +307,9 @@ class TSSRequest:
                 if not manifest_node.get('Trusted', False):
                     logger.debug(f'skipping {key} as it is not trusted')
                     continue
-                info = manifest_node['Info']
-                if not info['IsFirmwarePayload'] and not info['IsSecondaryFirmwarePayload'] and \
-                        not info['IsFUDFirmware']:
-                    logger.debug(f'skipping {key} as it is neither firmware nor secondary nor FUD firmware payload')
+                info = manifest_entry['Info']
+                if not is_fw_payload(info):
+                    logger.debug(f'skipping {key} as it is not a firmware payload')
                     continue
 
             if info_dict.get('IsFTAB'):
@@ -335,15 +340,18 @@ class TSSRequest:
         if overrides is not None:
             self._request.update(overrides)
 
-    def add_ap_img3_tags(self, parameters: typing.Mapping):
+    def add_ap_img3_tags(self, parameters: dict):
         if 'ApNonce' in parameters:
             self._request['ApNonce'] = parameters['ApNonce']
         self._request['@APTicket'] = True
 
     def add_ap_img4_tags(self, parameters):
         keys_to_copy = (
-            'ApNonce', 'Ap,OSLongVersion', 'ApSecurityMode', 'ApProductionMode', 'ApSepNonce',
-            'PearlCertificationRootPub', 'NeRDEpoch', 'ApSikaFuse')
+            'ApNonce', 'ApProductionMode', 'ApSecurityMode', 'Ap,OSLongVersion', 'ApSecurityMode', 'ApSepNonce',
+            'Ap,SDKPlatform', 'PearlCertificationRootPub', 'NeRDEpoch', 'ApSikaFuse', 'Ap,SikaFuse', 'Ap,OSReleaseType',
+            'Ap,ProductType', 'Ap,Target', 'Ap,TargetType', 'AllowNeRDBoot', 'Ap,ProductMarketingVersion',
+            'Ap,Timestamp',
+        )
         for k in keys_to_copy:
             if k in parameters:
                 v = parameters[k]
@@ -353,13 +361,24 @@ class TSSRequest:
                     k = 'Ap,SikaFuse'
                 self._request[k] = v
 
-        uid_mode = parameters.get('UID_MODE', False)
+        uid_mode = parameters.get('UID_MODE')
 
-        self._request['UID_MODE'] = uid_mode
+        if 'NeRDEpoch' in parameters:
+            self._request['PermitNeRDPivot'] = b''
+
+        if uid_mode is not None:
+            self._request['UID_MODE'] = uid_mode
         self._request['@ApImg4Ticket'] = True
         self._request['@BBTicket'] = True
 
-    def add_se_tags(self, parameters: typing.Mapping, overrides=None):
+        if parameters.get('RequiresUIDMode'):
+            # The logic here is missing why this value is expected to be 'false'
+            self._request['UID_MODE'] = False
+
+            # Workaround: We have only seen Ap,SikaFuse together with UID_MODE
+            self._request['Ap,SikaFuse'] = 0
+
+    def add_se_tags(self, parameters: dict, overrides=None):
         manifest = parameters['Manifest']
 
         # add tags indicating we want to get the SE,Ticket
@@ -414,7 +433,7 @@ class TSSRequest:
         if overrides is not None:
             self._request.update(overrides)
 
-    def add_savage_tags(self, parameters: typing.Mapping, overrides=None, component_name=None):
+    def add_savage_tags(self, parameters: dict, overrides=None, component_name=None):
         manifest = parameters['Manifest']
 
         # add tags indicating we want to get the Savage,Ticket
@@ -460,7 +479,7 @@ class TSSRequest:
 
         return comp_name
 
-    def add_yonkers_tags(self, parameters: typing.Mapping, overrides=None):
+    def add_yonkers_tags(self, parameters: dict, overrides=None):
         manifest = parameters['Manifest']
 
         # add tags indicating we want to get the Yonkers,Ticket
@@ -512,7 +531,7 @@ class TSSRequest:
 
         return result_comp_name
 
-    def add_baseband_tags(self, parameters: typing.Mapping, overrides=None):
+    def add_baseband_tags(self, parameters: dict, overrides=None):
         self._request['@BBTicket'] = True
 
         keys_to_copy = (
@@ -544,7 +563,7 @@ class TSSRequest:
         if overrides:
             self._request.update(overrides)
 
-    def add_rose_tags(self, parameters: typing.Mapping, overrides: typing.Mapping = None):
+    def add_rose_tags(self, parameters: dict, overrides: typing.Optional[dict] = None):
         manifest = parameters['Manifest']
 
         # add tags indicating we want to get the Rap,Ticket
@@ -603,7 +622,7 @@ class TSSRequest:
         if overrides is not None:
             self._request.update(overrides)
 
-    def add_veridian_tags(self, parameters: typing.Mapping, overrides: typing.Mapping = None):
+    def add_veridian_tags(self, parameters: dict, overrides: typing.Optional[dict] = None):
         manifest = parameters['Manifest']
 
         # add tags indicating we want to get the Rap,Ticket
@@ -646,7 +665,7 @@ class TSSRequest:
         if overrides is not None:
             self._request.update(overrides)
 
-    def add_tcon_tags(self, parameters: typing.Mapping, overrides: typing.Mapping = None):
+    def add_tcon_tags(self, parameters: dict, overrides: typing.Optional[dict] = None):
         manifest = parameters['Manifest']
 
         # add tags indicating we want to get the Baobab,Ticket
@@ -756,7 +775,7 @@ class TSSRequest:
     def update(self, options) -> None:
         self._request.update(options)
 
-    def send_receive(self) -> TSSResponse:
+    async def send_receive(self) -> TSSResponse:
         headers = {
             'Cache-Control': 'no-cache',
             'Content-type': 'text/xml; charset="utf-8"',
@@ -766,9 +785,14 @@ class TSSRequest:
 
         logger.info('Sending TSS request...')
         logger.debug(self._request)
-        r = requests.post(TSS_CONTROLLER_ACTION_URL, headers=headers,
-                          data=plistlib.dumps(self._request), verify=False)
-        content = r.content
+
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            def post() -> bytes:
+                return requests.post(TSS_CONTROLLER_ACTION_URL, headers=headers, data=plistlib.dumps(self._request),
+                                     verify=False).content
+
+            content = await loop.run_in_executor(executor, post)
 
         if b'MESSAGE=SUCCESS' in content:
             logger.info('response successfully received')

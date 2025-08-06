@@ -9,9 +9,11 @@ import shutil
 import stat as stat_module
 import struct
 import sys
+import warnings
 from collections import namedtuple
 from datetime import datetime
-from typing import Callable, List, Optional, Union
+from re import Pattern
+from typing import Callable, Optional, Union
 
 import hexdump
 from click.exceptions import Exit
@@ -20,6 +22,7 @@ from parameter_decorators import path_to_str
 from pygments import formatters, highlight, lexers
 from pygnuutils.cli.ls import ls as ls_cli
 from pygnuutils.ls import Ls, LsStub
+from tqdm.auto import trange
 from xonsh.built_ins import XSH
 from xonsh.cli_utils import Annotated, Arg, ArgParserAlias
 from xonsh.main import main as xonsh_main
@@ -221,20 +224,32 @@ class AfcService(LockdownService):
         super().__init__(lockdown, service_name)
         self.packet_num = 0
 
-    def pull(self, relative_src, dst, callback=None, src_dir=''):
-        src = posixpath.join(src_dir, relative_src)
-        if callback is not None:
-            callback(src, dst)
-
-        src = self.resolve_path(src)
+    def pull(self, relative_src: str, dst: str, match: Optional[Pattern] = None, callback: Optional[Callable] = None,
+             src_dir: str = '', ignore_errors: bool = False, progress_bar: bool = True) -> None:
+        src = self.resolve_path(posixpath.join(src_dir, relative_src))
 
         if not self.isdir(src):
             # normal file
             if os.path.isdir(dst):
                 dst = os.path.join(dst, os.path.basename(relative_src))
             with open(dst, 'wb') as f:
-                f.write(self.get_file_contents(src))
+                src_size = self.stat(src)['st_size']
+                if src_size <= MAXIMUM_READ_SIZE:
+                    f.write(self.get_file_contents(src))
+                else:
+                    left_size = src_size
+                    handle = self.fopen(src)
+                    if progress_bar:
+                        pb = trange(src_size // MAXIMUM_READ_SIZE + 1)
+                    else:
+                        pb = range(src_size // MAXIMUM_READ_SIZE + 1)
+                    for _ in pb:
+                        f.write(self.fread(handle, min(MAXIMUM_READ_SIZE, left_size)))
+                        left_size -= MAXIMUM_READ_SIZE
+                    self.fclose(handle)
             os.utime(dst, (os.stat(dst).st_atime, self.stat(src)['st_mtime'].timestamp()))
+            if callback is not None:
+                callback(src, dst)
         else:
             # directory
             dst_path = pathlib.Path(dst) / os.path.basename(relative_src)
@@ -246,12 +261,23 @@ class AfcService(LockdownService):
 
                 src_filename = self.resolve_path(src_filename)
 
-                if self.isdir(src_filename):
-                    dst_filename.mkdir(exist_ok=True)
-                    self.pull(src_filename, str(dst_path), callback=callback)
+                if match is not None and not match.match(posixpath.basename(src_filename)):
                     continue
 
-                self.pull(src_filename, str(dst_path), callback=callback)
+                try:
+                    if self.isdir(src_filename):
+                        dst_filename.mkdir(exist_ok=True)
+                        self.pull(src_filename, str(dst_path), callback=callback, ignore_errors=ignore_errors,
+                                  progress_bar=progress_bar)
+                        continue
+
+                    self.pull(src_filename, str(dst_path), callback=callback, ignore_errors=ignore_errors,
+                              progress_bar=progress_bar)
+
+                except Exception as afc_exception:
+                    if not ignore_errors:
+                        raise
+                    self.logger.warning("(Ignoring) Error:", afc_exception, "occured during the copy of", src_filename)
 
     @path_to_str()
     def exists(self, filename):
@@ -309,7 +335,7 @@ class AfcService(LockdownService):
         self._push_internal(local_path, remote_path, callback)
 
     @path_to_str()
-    def _rm_single(self, filename: str, force: bool = False) -> bool:
+    def rm_single(self, filename: str, force: bool = False) -> bool:
         """ remove single file or directory
 
          return if succeed or raise exception depending on force parameter.
@@ -328,23 +354,24 @@ class AfcService(LockdownService):
             raise
 
     @path_to_str()
-    def rm(self, filename: str, force: bool = False) -> List[str]:
+    def rm(self, filename: str, match: Optional[Pattern] = None, force: bool = False) -> list[str]:
         """ recursive removal of a directory or a file
 
         if did not succeed, return list of undeleted filenames or raise exception depending on force parameter.
 
         :param filename: path to directory or a file
+        :param match: Pattern of directory entries to remove or None to remove all
         :param force: True for ignore exception and return list of undeleted paths
         :return: list of undeleted paths
         :rtype: list[str]
         """
         if not self.exists(filename):
-            if not self._rm_single(filename, force=force):
+            if not self.rm_single(filename, force=force):
                 return [filename]
 
         # single file
         if not self.isdir(filename):
-            if self._rm_single(filename, force=force):
+            if self.rm_single(filename, force=force):
                 return []
             return [filename]
 
@@ -352,16 +379,20 @@ class AfcService(LockdownService):
         undeleted_items = []
         for entry in self.listdir(filename):
             current_filename = posixpath.join(filename, entry)
+
+            if match is not None and not match.match(posixpath.basename(current_filename)):
+                continue
+
             if self.isdir(current_filename):
                 ret_undeleted_items = self.rm(current_filename, force=True)
                 undeleted_items.extend(ret_undeleted_items)
             else:
-                if not self._rm_single(current_filename, force=True):
+                if not self.rm_single(current_filename, force=True):
                     undeleted_items.append(current_filename)
 
         # directory path
         try:
-            if not self._rm_single(filename, force=force):
+            if not self.rm_single(filename, force=force):
                 undeleted_items.append(filename)
                 return undeleted_items
         except AfcException:
@@ -430,7 +461,7 @@ class AfcService(LockdownService):
                                   afc_make_link_req_t.build({'type': type_, 'target': target, 'source': source}))
 
     @path_to_str()
-    def fopen(self, filename: str, mode='r'):
+    def fopen(self, filename: str, mode: str = 'r') -> int:
         if mode not in AFC_FOPEN_TEXTUAL_MODES:
             raise ArgumentError(f'mode can be only one of: {AFC_FOPEN_TEXTUAL_MODES.keys()}')
 
@@ -438,7 +469,7 @@ class AfcService(LockdownService):
                                   afc_fopen_req_t.build({'mode': AFC_FOPEN_TEXTUAL_MODES[mode], 'filename': filename}))
         return afc_fopen_resp_t.parse(data).handle
 
-    def fclose(self, handle):
+    def fclose(self, handle: int):
         return self._do_operation(afc_opcode_t.FILE_CLOSE, afc_fclose_req_t.build({'handle': handle}))
 
     @path_to_str()
@@ -451,7 +482,7 @@ class AfcService(LockdownService):
                 raise
             raise AfcFileNotFoundError(e.args[0], e.status) from e
 
-    def fread(self, handle, sz):
+    def fread(self, handle: int, sz: bytes) -> bytes:
         data = b''
         while sz > 0:
             if sz > MAXIMUM_READ_SIZE:
@@ -708,11 +739,9 @@ class AfcShell:
     @classmethod
     def create(cls, service_provider: LockdownServiceProvider, service_name: Optional[str] = None,
                service: Optional[LockdownService] = None, auto_cd: Optional[str] = '/'):
-        args = ['--rc']
-        home_rc = pathlib.Path('~/.xonshrc').expanduser()
-        if home_rc.exists():
-            args.append(str(home_rc.expanduser().absolute()))
-        args.append(str(pathlib.Path(__file__).absolute()))
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        args = ['--rc', str(pathlib.Path(__file__).absolute())]
+        os.environ['XONSH_COLOR_STYLE'] = 'default'
         XSH.ctx['_class'] = cls
         XSH.ctx['_lockdown'] = service_provider
         XSH.ctx['_auto_cd'] = auto_cd
@@ -761,7 +790,7 @@ class AfcShell:
         # clear all host commands except for some useful ones
         XSH.env['PATH'].clear()
         # adding "file" just to fix xonsh errors
-        for cmd in ['wc', 'grep', 'egrep', 'sed', 'awk', 'print', 'yes', 'cat', 'file']:
+        for cmd in ['wc', 'grep', 'egrep', 'sed', 'awk', 'print', 'yes', 'cat']:
             executable = shutil.which(cmd)
             if executable is not None:
                 self._register_rpc_command(cmd, executable)
@@ -842,15 +871,17 @@ class AfcShell:
     def _do_cat(self, filename: str):
         print(try_decode(self.afc.get_file_contents(self.relative_path(filename))))
 
-    def _do_rm(self, file: Annotated[List[str], Arg(nargs='+', completer=path_completer)]):
+    def _do_rm(self, file: Annotated[list[str], Arg(nargs='+', completer=path_completer)]):
         for filename in file:
             self.afc.rm(self.relative_path(filename))
 
-    def _do_pull(self, remote_path: Annotated[str, Arg(completer=path_completer)], local_path: str):
+    def _do_pull(self, remote_path: Annotated[str, Arg(completer=path_completer)], local_path: str,
+                 ignore_errors: bool = False, progress_bar: bool = True):
         def log(src, dst):
             print(f'{src} --> {dst}')
 
-        self.afc.pull(remote_path, local_path, callback=log, src_dir=self.cwd)
+        self.afc.pull(remote_path, local_path, callback=log, src_dir=self.cwd, ignore_errors=ignore_errors,
+                      progress_bar=progress_bar)
 
     def _do_push(self, local_path: str, remote_path: Annotated[str, Arg(completer=path_completer)]):
         def log(src, dst):
@@ -884,7 +915,7 @@ class AfcShell:
 
     def _update_prompt(self) -> None:
         self.prompt = highlight(f'[{self.afc.service_name}:{self.cwd}]$ ', lexers.BashSessionLexer(),
-                                formatters.TerminalTrueColorFormatter(style='solarized-dark')).strip()
+                                formatters.Terminal256Formatter(style='solarized-dark')).strip()
 
     def _complete(self, text, line, begidx, endidx):
         curdir_diff = posixpath.dirname(text)

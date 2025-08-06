@@ -1,11 +1,13 @@
 import dataclasses
-import datetime
-import sys
 import typing
+from typing import Optional
 
-from pymobiledevice3.exceptions import DvtException, DeviceLockedError
+from pymobiledevice3.exceptions import DisableMemoryLimitError, DvtException, DeviceLockedError
+from pymobiledevice3.osu.os_utils import get_os_utils
 from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
 from pymobiledevice3.services.remote_server import MessageAux
+
+OSUTIL = get_os_utils()
 
 
 @dataclasses.dataclass
@@ -17,10 +19,7 @@ class OutputReceivedEvent:
     @classmethod
     def create(cls, message) -> 'OutputReceivedEvent':
         try:
-            if sys.platform == 'win32':
-                date = datetime.datetime.fromtimestamp(message[2].value / 1000)
-            else:
-                date = datetime.datetime.fromtimestamp(message[2].value)
+            date = OSUTIL.parse_timestamp(message[2].value)
         except (ValueError, OSError):
             date = None
 
@@ -42,6 +41,15 @@ class ProcessControl:
         self._channel.sendSignal_toPid_(MessageAux().append_obj(sig).append_obj(pid), expects_reply=True)
         return self._channel.receive_plist()
 
+    def disable_memory_limit_for_pid(self, pid: int) -> None:
+        """
+        Waive memory limit for a given pid
+        :param pid: process id.
+        """
+        self._channel.requestDisableMemoryLimitsForPid_(MessageAux().append_int(pid), expects_reply=True)
+        if not self._channel.receive_plist():
+            raise DisableMemoryLimitError()
+
     def kill(self, pid: int):
         """
         Kill a process.
@@ -49,8 +57,12 @@ class ProcessControl:
         """
         self._channel.killPid_(MessageAux().append_obj(pid), expects_reply=False)
 
+    def process_identifier_for_bundle_identifier(self, app_bundle_identifier: str) -> int:
+        self._channel.processIdentifierForBundleIdentifier_(MessageAux().append_obj(app_bundle_identifier), expects_reply=True)
+        return self._channel.receive_plist()
+
     def launch(self, bundle_id: str, arguments=None, kill_existing: bool = True, start_suspended: bool = False,
-               environment: typing.Mapping = None, extra_options: typing.Mapping = None) -> int:
+               environment: Optional[dict] = None, extra_options: Optional[dict] = None) -> int:
         """
         Launch a process.
         :param bundle_id: Bundle id of the process.

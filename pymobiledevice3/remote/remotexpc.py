@@ -1,14 +1,17 @@
-import socket
-from socket import create_connection
-from typing import Generator, Mapping, Optional, Tuple
+import asyncio
+import sys
+from asyncio import IncompleteReadError
+from typing import AsyncIterable, Optional
 
 import IPython
+import nest_asyncio
 from construct import StreamError
 from hyperframe.frame import DataFrame, Frame, GoAwayFrame, HeadersFrame, RstStreamFrame, SettingsFrame, \
     WindowUpdateFrame
 from pygments import formatters, highlight, lexers
+from traitlets.config import Config
 
-from pymobiledevice3.exceptions import StreamClosedError
+from pymobiledevice3.exceptions import ProtocolError, StreamClosedError
 from pymobiledevice3.remote.xpc_message import XpcFlags, XpcInt64Type, XpcUInt64Type, XpcWrapper, create_xpc_wrapper, \
     decode_xpc_object
 
@@ -23,47 +26,63 @@ HTTP2_MAGIC = b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'
 ROOT_CHANNEL = 1
 REPLY_CHANNEL = 3
 
+FIRST_REPLY_TIMEOUT = 3
+
 SHELL_USAGE = """
 # This shell allows you to communicate directly with every RemoteXPC service.
 
 # For example, you can do the following:
-resp = client.send_receive_request({"Command": "DoSomething"})
+resp = await client.send_receive_request({"Command": "DoSomething"})
 """
 
 
 class RemoteXPCConnection:
-    def __init__(self, address: Tuple[str, int]):
+    def __init__(self, address: tuple[str, int]):
         self._previous_frame_data = b''
         self.address = address
-        self.sock: Optional[socket.socket] = None
-        self.next_message_id: Mapping[int: int] = {ROOT_CHANNEL: 0, REPLY_CHANNEL: 0}
+        self.next_message_id: dict[int, int] = {ROOT_CHANNEL: 0, REPLY_CHANNEL: 0}
         self.peer_info = None
+        self._reader: Optional[asyncio.StreamReader] = None
+        self._writer: Optional[asyncio.StreamWriter] = None
 
-    def __enter__(self) -> 'RemoteXPCConnection':
-        self.connect()
+    async def __aenter__(self) -> 'RemoteXPCConnection':
+        await self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self.close()
 
-    def connect(self) -> None:
-        self.sock = create_connection(self.address)
-        self._do_handshake()
+    async def connect(self) -> None:
+        self._reader, self._writer = await asyncio.open_connection(self.address[0], self.address[1])
+        try:
+            await self._do_handshake()
+        except Exception:  # noqa: E722
+            await self.close()
+            raise
 
-    def close(self) -> None:
-        self.sock.close()
+    async def close(self) -> None:
+        if self._writer is None:
+            return
+        self._writer.close()
+        try:
+            await self._writer.wait_closed()
+        except ConnectionResetError:
+            pass
+        self._writer = None
+        self._reader = None
 
-    def send_request(self, data: Mapping, wanting_reply: bool = False) -> None:
+    async def send_request(self, data: dict, wanting_reply: bool = False) -> None:
         xpc_wrapper = create_xpc_wrapper(
             data, message_id=self.next_message_id[ROOT_CHANNEL], wanting_reply=wanting_reply)
-        self.sock.sendall(DataFrame(stream_id=ROOT_CHANNEL, data=xpc_wrapper).serialize())
+        self._writer.write(DataFrame(stream_id=ROOT_CHANNEL, data=xpc_wrapper).serialize())
+        await self._writer.drain()
 
-    def iter_file_chunks(self, total_size: int, file_idx: int = 0) -> Generator[bytes, None, None]:
+    async def iter_file_chunks(self, total_size: int, file_idx: int = 0) -> AsyncIterable[bytes]:
         stream_id = (file_idx + 1) * 2
-        self._open_channel(stream_id, XpcFlags.FILE_TX_STREAM_RESPONSE)
+        await self._open_channel(stream_id, XpcFlags.FILE_TX_STREAM_RESPONSE)
         size = 0
         while size < total_size:
-            frame = self._receive_next_data_frame()
+            frame = await self._receive_next_data_frame()
 
             if 'END_STREAM' in frame.flags:
                 continue
@@ -77,15 +96,15 @@ class RemoteXPCConnection:
             size += len(frame.data)
             yield frame.data
 
-    def receive_file(self, total_size: int) -> bytes:
+    async def receive_file(self, total_size: int) -> bytes:
         buf = b''
-        for chunk in self.iter_file_chunks(total_size):
+        async for chunk in self.iter_file_chunks(total_size):
             buf += chunk
         return buf
 
-    def receive_response(self) -> Mapping:
+    async def receive_response(self) -> dict:
         while True:
-            frame = self._receive_next_data_frame()
+            frame = await self._receive_next_data_frame()
             try:
                 xpc_message = XpcWrapper.parse(self._previous_frame_data + frame.data).message
                 self._previous_frame_data = b''
@@ -99,55 +118,62 @@ class RemoteXPCConnection:
             self.next_message_id[frame.stream_id] = xpc_message.message_id + 1
             return decode_xpc_object(xpc_message.payload.obj)
 
-    def send_receive_request(self, data: Mapping):
-        self.send_request(data, wanting_reply=True)
-        return self.receive_response()
+    async def send_receive_request(self, data: dict) -> dict:
+        await self.send_request(data, wanting_reply=True)
+        return await self.receive_response()
 
     def shell(self) -> None:
-        IPython.embed(
-            header=highlight(SHELL_USAGE, lexers.PythonLexer(),
-                             formatters.TerminalTrueColorFormatter(style='native')),
-            user_ns={
-                'client': self,
-                'XpcInt64Type': XpcInt64Type,
-                'XpcUInt64Type': XpcUInt64Type,
-            })
+        nest_asyncio.apply(asyncio.get_running_loop())
+        sys.argv = ['a']
+        config = Config()
+        config.InteractiveShellApp.exec_lines = ['%autoawait asyncio']
+        print(highlight(SHELL_USAGE, lexers.PythonLexer(),
+                        formatters.Terminal256Formatter(style='native')))
+        IPython.start_ipython(config=config, user_ns={
+            'client': self,
+            'XpcInt64Type': XpcInt64Type,
+            'XpcUInt64Type': XpcUInt64Type,
+        })
 
-    def _do_handshake(self) -> None:
-        self.sock.sendall(HTTP2_MAGIC)
+    async def _do_handshake(self) -> None:
+        self._writer.write(HTTP2_MAGIC)
+        await self._writer.drain()
 
         # send h2 headers
-        self._send_frame(SettingsFrame(settings={
+        await self._send_frame(SettingsFrame(settings={
             SettingsFrame.MAX_CONCURRENT_STREAMS: DEFAULT_SETTINGS_MAX_CONCURRENT_STREAMS,
             SettingsFrame.INITIAL_WINDOW_SIZE: DEFAULT_SETTINGS_INITIAL_WINDOW_SIZE,
         }))
-        self._send_frame(WindowUpdateFrame(stream_id=0, window_increment=DEFAULT_WIN_SIZE_INCR))
-        self._send_frame(HeadersFrame(stream_id=ROOT_CHANNEL, flags=['END_HEADERS']))
+        await self._send_frame(WindowUpdateFrame(stream_id=0, window_increment=DEFAULT_WIN_SIZE_INCR))
+        await self._send_frame(HeadersFrame(stream_id=ROOT_CHANNEL, flags=['END_HEADERS']))
 
         # send first actual requests
-        self.send_request({})
-        self._send_frame(DataFrame(stream_id=ROOT_CHANNEL,
-                                   data=XpcWrapper.build({'size': 0, 'flags': 0x0201, 'payload': None})))
+        await self.send_request({})
+        await self._send_frame(DataFrame(stream_id=ROOT_CHANNEL,
+                                         data=XpcWrapper.build({'size': 0, 'flags': 0x0201, 'payload': None})))
         self.next_message_id[ROOT_CHANNEL] += 1
-        self._open_channel(REPLY_CHANNEL, XpcFlags.INIT_HANDSHAKE)
+        await self._open_channel(REPLY_CHANNEL, XpcFlags.INIT_HANDSHAKE)
         self.next_message_id[REPLY_CHANNEL] += 1
 
-        assert isinstance(self._receive_frame(), SettingsFrame)
+        settings_frame = await asyncio.wait_for(self._receive_frame(), FIRST_REPLY_TIMEOUT)
+        if not isinstance(settings_frame, SettingsFrame):
+            raise ProtocolError(f'Got unexpected frame: {settings_frame} instead of a SettingsFrame')
 
-        self._send_frame(SettingsFrame(flags=['ACK']))
+        await self._send_frame(SettingsFrame(flags=['ACK']))
 
-    def _open_channel(self, stream_id: int, flags: int):
+    async def _open_channel(self, stream_id: int, flags: int) -> None:
         flags |= XpcFlags.ALWAYS_SET
-        self._send_frame(HeadersFrame(stream_id=stream_id, flags=['END_HEADERS']))
-        self._send_frame(
+        await self._send_frame(HeadersFrame(stream_id=stream_id, flags=['END_HEADERS']))
+        await self._send_frame(
             DataFrame(stream_id=stream_id, data=XpcWrapper.build({'size': 0, 'flags': flags, 'payload': None})))
 
-    def _send_frame(self, frame: Frame) -> None:
-        self.sock.sendall(frame.serialize())
+    async def _send_frame(self, frame: Frame) -> None:
+        self._writer.write(frame.serialize())
+        await self._writer.drain()
 
-    def _receive_next_data_frame(self) -> DataFrame:
+    async def _receive_next_data_frame(self) -> DataFrame:
         while True:
-            frame = self._receive_frame()
+            frame = await self._receive_frame()
 
             if isinstance(frame, GoAwayFrame):
                 raise StreamClosedError(f'Got {frame}')
@@ -157,22 +183,23 @@ class RemoteXPCConnection:
                 continue
 
             if frame.stream_id % 2 == 0 and frame.body_len > 0:
-                self._send_frame(WindowUpdateFrame(stream_id=0, window_increment=frame.body_len))
-                self._send_frame(WindowUpdateFrame(stream_id=frame.stream_id, window_increment=frame.body_len))
+                await self._send_frame(WindowUpdateFrame(stream_id=0, window_increment=frame.body_len))
+                await self._send_frame(WindowUpdateFrame(stream_id=frame.stream_id, window_increment=frame.body_len))
 
             return frame
 
-    def _receive_frame(self) -> Frame:
-        buf = self._recvall(FRAME_HEADER_SIZE)
+    async def _receive_frame(self) -> Frame:
+        buf = await self._reader.readexactly(FRAME_HEADER_SIZE)
         frame, additional_size = Frame.parse_frame_header(memoryview(buf))
-        frame.parse_body(memoryview(self._recvall(additional_size)))
+        frame.parse_body(memoryview(await self._recvall(additional_size)))
         return frame
 
-    def _recvall(self, size: int) -> bytes:
+    async def _recvall(self, size: int) -> bytes:
         data = b''
         while len(data) < size:
-            chunk = self.sock.recv(size - len(data))
-            if chunk is None or len(chunk) == 0:
+            try:
+                chunk = await self._reader.readexactly(size - len(data))
+            except IncompleteReadError:
                 raise ConnectionAbortedError()
             data += chunk
         return data

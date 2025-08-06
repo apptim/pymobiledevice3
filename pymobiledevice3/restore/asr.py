@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 import os
@@ -7,11 +8,11 @@ import typing
 from tqdm import trange
 
 from pymobiledevice3.exceptions import PyMobileDevice3Exception
-from pymobiledevice3.service_connection import LockdownServiceConnection
+from pymobiledevice3.service_connection import ServiceConnection
 
 ASR_VERSION = 1
 ASR_STREAM_ID = 1
-ASR_PORT = 12345
+DEFAULT_ASR_SYNC_PORT = 12345
 ASR_FEC_SLICE_STRIDE = 40
 ASR_PACKETS_PER_FEC = 25
 ASR_PAYLOAD_PACKET_SIZE = 1450
@@ -26,36 +27,41 @@ class ASRClient:
     ASR — Apple Software Restore
     """
 
-    SERVICE_PORT = ASR_PORT
+    def __init__(self, udid: str) -> None:
+        self._udid: str = udid
+        self.logger = logging.getLogger(f'{asyncio.current_task().get_name()}-{__name__}')
+        self.service: typing.Optional[ServiceConnection] = None
+        self.checksum_chunks: bool = False
 
-    def __init__(self, udid: str):
-        self.service = LockdownServiceConnection.create_using_usbmux(udid, self.SERVICE_PORT, connection_type='USB')
+    async def connect(self, port: int = DEFAULT_ASR_SYNC_PORT) -> None:
+        self.service = ServiceConnection.create_using_usbmux(self._udid, port, connection_type='USB')
+        await self.service.aio_start()
 
         # receive Initiate command message
-        data = self.recv_plist()
-        logger.debug(f'got command: {data}')
+        data = await self.recv_plist()
+        self.logger.debug(f'got command: {data}')
 
         command = data.get('Command')
         if command != 'Initiate':
             raise PyMobileDevice3Exception(f'invalid command received: {command}')
 
         self.checksum_chunks = data.get('Checksum Chunks', False)
-        logger.debug(f'Checksum Chunks: {self.checksum_chunks}')
+        self.logger.debug(f'Checksum Chunks: {self.checksum_chunks}')
 
-    def recv_plist(self) -> typing.Mapping:
+    async def recv_plist(self) -> dict:
         buf = b''
         while not buf.endswith(b'</plist>\n'):
-            buf += self.service.recv()
+            buf += await self.service.aio_recvall(1)
         return plistlib.loads(buf)
 
-    def send_plist(self, plist: typing.Mapping):
-        logger.debug(plistlib.dumps(plist).decode())
-        self.service.sendall(plistlib.dumps(plist))
+    async def send_plist(self, plist: dict) -> None:
+        self.logger.debug(plistlib.dumps(plist).decode())
+        await self.send_buffer(plistlib.dumps(plist))
 
-    def send_buffer(self, buf: bytes):
-        self.service.sendall(buf)
+    async def send_buffer(self, buf: bytes) -> None:
+        await self.service.aio_sendall(buf)
 
-    def handle_oob_data_request(self, packet: typing.Mapping, filesystem: typing.IO):
+    async def handle_oob_data_request(self, packet: dict, filesystem: typing.IO):
         oob_length = packet['OOB Length']
         oob_offset = packet['OOB Offset']
         filesystem.seek(oob_offset, os.SEEK_SET)
@@ -63,9 +69,9 @@ class ASRClient:
         oob_data = filesystem.read(oob_length)
         assert len(oob_data) == oob_length
 
-        self.send_buffer(oob_data)
+        await self.send_buffer(oob_data)
 
-    def perform_validation(self, filesystem: typing.IO):
+    async def perform_validation(self, filesystem: typing.IO) -> None:
         filesystem.seek(0, os.SEEK_END)
         length = filesystem.tell()
         filesystem.seek(0, os.SEEK_SET)
@@ -86,23 +92,23 @@ class ASRClient:
         packet_info['Stream ID'] = ASR_STREAM_ID
         packet_info['Version'] = ASR_VERSION
 
-        self.send_plist(packet_info)
+        await self.send_plist(packet_info)
 
         while True:
-            packet = self.recv_plist()
-            logger.debug(f'perform_validation: {packet}')
+            packet = await self.recv_plist()
+            self.logger.debug(f'perform_validation: {packet}')
             command = packet['Command']
 
             if command == 'Payload':
                 break
 
             elif command == 'OOBData':
-                self.handle_oob_data_request(packet, filesystem)
+                await self.handle_oob_data_request(packet, filesystem)
 
             else:
                 raise PyMobileDevice3Exception(f'unknown packet: {packet}')
 
-    def send_payload(self, filesystem: typing.IO):
+    async def send_payload(self, filesystem: typing.IO) -> None:
         filesystem.seek(0, os.SEEK_END)
         length = filesystem.tell()
         filesystem.seek(0, os.SEEK_SET)
@@ -113,4 +119,7 @@ class ASRClient:
             if self.checksum_chunks:
                 chunk += hashlib.sha1(chunk).digest()
 
-            self.send_buffer(chunk)
+            await self.send_buffer(chunk)
+
+    async def close(self) -> None:
+        await self.service.aio_close()

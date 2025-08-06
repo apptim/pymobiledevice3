@@ -1,16 +1,25 @@
+import asyncio
+import difflib
 import logging
+import os
+import re
 import sys
+import textwrap
 import traceback
+from typing import Union
 
 import click
 import coloredlogs
 
-from pymobiledevice3.exceptions import AccessDeniedError, ConnectionFailedToUsbmuxdError, DeprecationError, \
-    DeveloperModeError, DeveloperModeIsNotEnabledError, DeviceHasPasscodeSetError, DeviceNotFoundError, \
-    FeatureNotSupportedError, InternalError, InvalidServiceError, MessageNotSupportedError, MissingValueError, \
-    NoDeviceConnectedError, NoDeviceSelectedError, NotEnoughDiskSpaceError, NotPairedError, OSNotSupportedError, \
-    PairingDialogResponsePendingError, PasswordRequiredError, RSDRequiredError, SetProhibitedError, \
+from pymobiledevice3.cli.cli_common import TUNNEL_ENV_VAR, isatty
+from pymobiledevice3.exceptions import AccessDeniedError, CloudConfigurationAlreadyPresentError, \
+    ConnectionFailedError, ConnectionFailedToUsbmuxdError, DeprecationError, DeveloperModeError, \
+    DeveloperModeIsNotEnabledError, DeviceHasPasscodeSetError, DeviceNotFoundError, FeatureNotSupportedError, \
+    InternalError, InvalidServiceError, MessageNotSupportedError, MissingValueError, NoDeviceConnectedError, \
+    NotEnoughDiskSpaceError, NotPairedError, OSNotSupportedError, PairingDialogResponsePendingError, \
+    PasswordRequiredError, QuicProtocolNotSupportedError, RSDRequiredError, SetProhibitedError, \
     TunneldConnectionError, UserDeniedPairingError
+from pymobiledevice3.lockdown import retry_create_using_usbmux
 from pymobiledevice3.osu.os_utils import get_os_utils
 
 coloredlogs.install(level=logging.INFO)
@@ -27,8 +36,16 @@ logging.getLogger('urllib3.connectionpool').disabled = True
 
 logger = logging.getLogger(__name__)
 
+# For issue https://github.com/doronz88/pymobiledevice3/issues/1217, details: https://bugs.python.org/issue37373
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 INVALID_SERVICE_MESSAGE = """Failed to start service. Possible reasons are:
 - If you were trying to access a developer service (developer subcommand):
+    - If your device iOS version >= 15.0:
+        - Make sure you first enabled "Developer Mode" via:
+          > python3 -m pymobiledevice3 amfi enable-developer-mode
+
     - Make sure the DeveloperDiskImage/PersonalizedImage is mounted via:
       > python3 -m pymobiledevice3 mounter auto-mount
 
@@ -42,7 +59,7 @@ INVALID_SERVICE_MESSAGE = """Failed to start service. Possible reasons are:
   https://github.com/doronz88/pymobiledevice3/issues/new?assignees=&labels=&projects=&template=bug_report.md&title=
 """
 
-CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'])
+CONTEXT_SETTINGS = dict(help_option_names=['-h', '--help'], max_content_width=400)
 
 # Mapping of index options to import file names
 CLI_GROUPS = {
@@ -71,37 +88,111 @@ CLI_GROUPS = {
     'usbmux': 'usbmux',
     'webinspector': 'webinspector',
     'version': 'version',
+    'install-completions': 'completions',
 }
+
+# Set if used the `--reconnect` option
+RECONNECT = False
 
 
 class Pmd3Cli(click.Group):
     def list_commands(self, ctx):
         return CLI_GROUPS.keys()
 
-    def get_command(self, ctx, name):
+    def get_command(self, ctx: click.Context, name: str) -> click.Command:
         if name not in CLI_GROUPS.keys():
-            ctx.fail(f'No such command {name!r}.')
-        mod = __import__(f'pymobiledevice3.cli.{CLI_GROUPS[name]}', None, None, ['cli'])
+            self.handle_invalid_command(ctx, name)
+        return self.import_and_get_command(ctx, name)
+
+    def handle_invalid_command(self, ctx: click.Context, name: str) -> None:
+        suggested_commands = self.search_commands(name)
+        suggestion = self.format_suggestions(suggested_commands)
+        ctx.fail(f'No such command {name!r}{suggestion}')
+
+    @staticmethod
+    def format_suggestions(suggestions: list[str]) -> str:
+        if not suggestions:
+            return ''
+        cmds = textwrap.indent('\n'.join(suggestions), ' ' * 4)
+        return f'\nDid you mean this?\n{cmds}'
+
+    @staticmethod
+    def import_and_get_command(ctx: click.Context, name: str) -> click.Command:
+        module_name = f'pymobiledevice3.cli.{CLI_GROUPS[name]}'
+        mod = __import__(module_name, None, None, ['cli'])
         command = mod.cli.get_command(ctx, name)
-        # Some cli groups have different names than the index
         if not command:
             command_name = mod.cli.list_commands(ctx)[0]
             command = mod.cli.get_command(ctx, command_name)
         return command
 
+    @staticmethod
+    def highlight_keyword(text: str, keyword: str) -> str:
+        return re.sub(f'({keyword})', click.style('\\1', bold=True), text, flags=re.IGNORECASE)
+
+    @staticmethod
+    def collect_commands(command: click.Command) -> Union[str, list[str]]:
+        commands = []
+        if isinstance(command, click.Group):
+            for k, v in command.commands.items():
+                cmd = Pmd3Cli.collect_commands(v)
+                if isinstance(cmd, list):
+                    commands.extend([f'{command.name} {c}' for c in cmd])
+                else:
+                    commands.append(f'{command.name} {cmd}')
+            return commands
+        return f'{command.name}'
+
+    @staticmethod
+    def search_commands(pattern: str) -> list[str]:
+        all_commands = Pmd3Cli.load_all_commands()
+        matched = sorted(filter(lambda cmd: re.search(pattern, cmd), all_commands))
+        if not matched:
+            matched = difflib.get_close_matches(pattern, all_commands, n=20, cutoff=0.4)
+        if isatty():
+            matched = [Pmd3Cli.highlight_keyword(cmd, pattern) for cmd in matched]
+        return matched
+
+    @staticmethod
+    def load_all_commands() -> list[str]:
+        all_commands = []
+        for key in CLI_GROUPS.keys():
+            module_name = f'pymobiledevice3.cli.{CLI_GROUPS[key]}'
+            mod = __import__(module_name, None, None, ['cli'])
+            cmd = Pmd3Cli.collect_commands(mod.cli.commands[key])
+            if isinstance(cmd, list):
+                all_commands.extend(cmd)
+            else:
+                all_commands.append(cmd)
+        return all_commands
+
 
 @click.command(cls=Pmd3Cli, context_settings=CONTEXT_SETTINGS)
-def cli():
-    pass
+@click.option('--reconnect', is_flag=True, default=False, help='Reconnect to device when disconnected.')
+def cli(reconnect: bool) -> None:
+    """
+    \b
+    Interact with a connected iDevice (iPhone, iPad, ...)
+    For more information please look at:
+        https://github.com/doronz88/pymobiledevice3
+    """
+    global RECONNECT
+    RECONNECT = reconnect
 
 
-def main() -> None:
+def invoke_cli_with_error_handling() -> bool:
+    """
+    Invoke the command line interface and return `True` if the failure reason of the command was that the device was
+    disconnected.
+    """
     try:
         cli()
     except NoDeviceConnectedError:
         logger.error('Device is not connected')
+        return True
     except ConnectionAbortedError:
         logger.error('Device was disconnected')
+        return True
     except NotPairedError:
         logger.error('Device is not paired')
     except UserDeniedPairingError:
@@ -118,6 +209,9 @@ def main() -> None:
         logger.error(f'Failed to enable developer-mode. Error: {e}')
     except ConnectionFailedToUsbmuxdError:
         logger.error('Failed to connect to usbmuxd socket. Make sure it\'s running.')
+    except ConnectionFailedError:
+        logger.error('Failed to connect to service port.')
+        return True
     except MessageNotSupportedError:
         logger.error('Message not supported for this iOS version')
         traceback.print_exc()
@@ -135,11 +229,10 @@ def main() -> None:
             logger.warning('Got an InvalidServiceError. Trying again over tunneld since it is a developer command')
             should_retry_over_tunneld = True
         if should_retry_over_tunneld:
-            sys.argv += ['--tunnel', e.identifier]
+            # use a single space because click will ignore envvars of empty strings
+            os.environ[TUNNEL_ENV_VAR] = e.identifier or ' '
             return main()
         logger.error(INVALID_SERVICE_MESSAGE)
-    except NoDeviceSelectedError:
-        return
     except PasswordRequiredError:
         logger.error('Device is password protected. Please unlock and retry')
     except AccessDeniedError:
@@ -160,10 +253,34 @@ def main() -> None:
         logger.error(
             f'Unsupported OS - {e.os_name}. To add support, consider contributing at '
             f'https://github.com/doronz88/pymobiledevice3.')
+    except CloudConfigurationAlreadyPresentError:
+        logger.error('A cloud configuration is already present on device. You must first erase the device in order '
+                     'to install new one:\n'
+                     '> pymobiledevice3 profile erase-device')
     except FeatureNotSupportedError as e:
         logger.error(
             f'Missing implementation of `{e.feature}` on `{e.os_name}`. To add support, consider contributing at '
             f'https://github.com/doronz88/pymobiledevice3.')
+    except QuicProtocolNotSupportedError as e:
+        logger.error(str(e))
+
+    return False
+
+
+def main() -> None:
+    # Retry to invoke the CLI
+    while invoke_cli_with_error_handling():
+        # If reached here, this means the failure reason was that the device is disconnected
+        if not RECONNECT:
+            # If not invoked with the `--reconnect` option, break here
+            break
+        try:
+            # Wait for the device to be available again
+            lockdown = retry_create_using_usbmux(None)
+            lockdown.close()
+        except KeyboardInterrupt:
+            print('Aborted.')
+            break
 
 
 if __name__ == '__main__':

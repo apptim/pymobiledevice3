@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
 import enum
-import socket
-from typing import Generator, Optional
+import time
+from collections.abc import Generator
+from typing import Optional
 
 import pcapng.blocks as blocks
 from construct import Byte, Bytes, Container, CString, Int16ub, Int32ub, Int32ul, Padded, Seek, Struct, this
@@ -320,6 +321,12 @@ device_packet_struct = Struct(
 )
 
 
+class CrossPlatformAddressFamily(enum.IntEnum):
+    AF_UNSPEC = 0
+    AF_INET = 2
+    AF_INET6 = 30
+
+
 class PcapdService(LockdownService):
     """
     Starting iOS 5, apple added a remote virtual interface (RVI) facility that allows mirroring networks traffic from
@@ -354,7 +361,7 @@ class PcapdService(LockdownService):
                     continue
 
             packet.interface_type = INTERFACE_NAMES(packet.interface_type)
-            packet.protocol_family = socket.AddressFamily(packet.protocol_family)
+            packet.protocol_family = CrossPlatformAddressFamily(packet.protocol_family)
 
             if not packet.frame_pre_length:
                 # Add fake ethernet header for pdp packets.
@@ -385,10 +392,21 @@ class PcapdService(LockdownService):
         writer = FileWriter(out, shb)
 
         for packet in packet_generator:
+            if hasattr(packet, 'timestamp'):
+                packet_time = packet.timestamp
+            else:
+                packet_time = time.time()
+
+            timestamp_microseconds = int(packet_time * 1_000_000)
+            timestamp_high = (timestamp_microseconds >> 32) & 0xFFFFFFFF
+            timestamp_low = timestamp_microseconds & 0xFFFFFFFF
+
             enhanced_packet = shb.new_member(blocks.EnhancedPacket, options={
                 'opt_comment': f'PID: {packet.pid}, ProcName: {packet.comm}, EPID: {packet.epid}, '
                                f'EProcName: {packet.ecomm}, SVC: {packet.svc}'
             })
 
             enhanced_packet.packet_data = packet.data
+            enhanced_packet.timestamp_high = timestamp_high
+            enhanced_packet.timestamp_low = timestamp_low
             writer.write_block(enhanced_packet)

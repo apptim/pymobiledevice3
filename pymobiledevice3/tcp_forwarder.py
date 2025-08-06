@@ -2,6 +2,7 @@ import logging
 import select
 import socket
 import threading
+import time
 from abc import abstractmethod
 from typing import Optional
 
@@ -55,10 +56,12 @@ class TcpForwarderBase:
             # as synchronous blocking
             readable, writable, exceptional = select.select(self.inputs, [], self.inputs, self.TIMEOUT)
             if self.stopped.is_set():
+                self.logger.debug("Closing since stopped is set")
                 break
 
             closed_sockets = set()
             for current_sock in readable:
+                self.logger.debug("Processing %r", current_sock)
                 if current_sock is self.server_socket:
                     self._handle_server_connection()
                 else:
@@ -66,11 +69,16 @@ class TcpForwarderBase:
                         try:
                             self._handle_data(current_sock, closed_sockets)
                         except ConnectionResetError:
+                            self.logger.exception("Error when handling data")
                             self._handle_close_or_error(current_sock)
+                    else:
+                        self.logger.debug("Is closed")
 
             for current_sock in exceptional:
+                self.logger.error("Sock failed: %r", current_sock)
                 self._handle_close_or_error(current_sock)
 
+        self.logger.info("Closing everything")
         # on stop, close all currently opened sockets
         for current_sock in self.inputs:
             current_sock.close()
@@ -87,22 +95,42 @@ class TcpForwarderBase:
         self.logger.info(f'connection {other_sock} was closed')
 
     def _handle_data(self, from_sock, closed_sockets):
-        data = from_sock.recv(1024)
-
-        if len(data) == 0:
-            # no data means socket was closed
+        self.logger.debug(f"Handling data from {from_sock}")
+        try:
+            data = from_sock.recv(1024)
+            if not data:
+                raise ConnectionResetError("Connection closed by the peer.")
+        except BlockingIOError:
+            self.logger.warning(f"Non-blocking read failed on {from_sock}, retrying later.")
+            return
+        except OSError as e:
+            self.logger.error(f"Error reading from socket {from_sock}: {e}")
             self._handle_close_or_error(from_sock)
             closed_sockets.add(from_sock)
-            closed_sockets.add(self.connections[from_sock])
             return
 
-        # when data is received from one end, just forward it to the other
-        other_sock = self.connections[from_sock]
+        other_sock = self.connections.get(from_sock)
+        if not other_sock:
+            self.logger.error(f"No connection mapping found for {from_sock}.")
+            return
 
-        # send the data in blocking manner
-        other_sock.setblocking(True)
-        other_sock.sendall(data)
-        other_sock.setblocking(False)
+        try:
+            total_sent = 0
+            while total_sent < len(data):
+                try:
+                    sent = other_sock.send(data[total_sent:])
+                    total_sent += sent
+                except BlockingIOError:
+                    self.logger.warning(f"Socket buffer full for {other_sock}, retrying in 100ms.")
+                    time.sleep(0.1)  # Introduce a small delay
+                except BrokenPipeError:
+                    self.logger.error(f"Broken pipe error on {other_sock}.")
+                    raise
+        except OSError as e:
+            self.logger.error(f"Unhandled error while forwarding data: {e}")
+            self._handle_close_or_error(from_sock)
+            closed_sockets.add(from_sock)
+            closed_sockets.add(other_sock)
 
     @abstractmethod
     def _establish_remote_connection(self) -> socket.socket:
@@ -164,6 +192,7 @@ class UsbmuxTcpForwarder(TcpForwarderBase):
         # connect directly using usbmuxd
         mux_device = usbmux.select_device(self.serial, connection_type=self.usbmux_connection_type,
                                           usbmux_address=self.usbmux_address)
+        self.logger.debug("Selected device: %r", mux_device)
         if mux_device is None:
             raise ConnectionFailedError()
         return mux_device.connect(self.dst_port, usbmux_address=self.usbmux_address)

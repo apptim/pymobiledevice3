@@ -4,14 +4,15 @@ import plistlib
 import xml.etree.ElementTree as ET
 from contextlib import closing
 from pathlib import Path
-from typing import List, Mapping
+from typing import Optional
 
 import click
 import inquirer3
 import requests
+from requests.structures import CaseInsensitiveDict
 
 from pymobiledevice3.exceptions import MobileActivationException
-from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
+from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 
 ACTIVATION_USER_AGENT_IOS = 'iOS Device Activator (MobileActivation-20 built on Jan 15 2012 at 19:07:28)'
 ACTIVATION_DEFAULT_URL = 'https://albert.apple.com/deviceservices/deviceActivation'
@@ -38,8 +39,8 @@ class Field:
 class ActivationForm:
     title: str
     description: str
-    fields: List[Field]
-    server_info: Mapping[str, str]
+    fields: list[Field]
+    server_info: dict[str, str]
 
 
 class MobileActivationService:
@@ -51,7 +52,7 @@ class MobileActivationService:
     """
     SERVICE_NAME = 'com.apple.mobileactivationd'
 
-    def __init__(self, lockdown: LockdownClient):
+    def __init__(self, lockdown: LockdownServiceProvider) -> None:
         self.lockdown = lockdown
 
     @property
@@ -136,17 +137,18 @@ class MobileActivationService:
         }
         if headers:
             data['ActivationResponseHeaders'] = dict(headers)
-        with closing(create_using_usbmux(self.lockdown.udid).start_lockdown_service(self.SERVICE_NAME)) as service:
+        with closing(self.lockdown.start_lockdown_service(self.SERVICE_NAME)) as service:
             return service.send_recv_plist(data)
 
-    def send_command(self, command, value=''):
+    def send_command(self, command: str, value: str = ''):
         data = {'Command': command}
         if value:
             data['Value'] = value
-        with closing(create_using_usbmux(self.lockdown.udid).start_lockdown_service(self.SERVICE_NAME)) as service:
+        with closing(self.lockdown.start_lockdown_service(self.SERVICE_NAME)) as service:
             return service.send_recv_plist(data)
 
-    def post(self, url, data, headers=None):
+    def post(self, url: str, data: dict, headers: Optional[CaseInsensitiveDict[str, str]] = None) \
+            -> tuple[bytes, CaseInsensitiveDict[str]]:
         if headers is None:
             headers = DEFAULT_HEADERS
 

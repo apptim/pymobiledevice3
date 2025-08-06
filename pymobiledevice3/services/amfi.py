@@ -2,25 +2,28 @@
 import logging
 import time
 
-import construct
-
-from pymobiledevice3.exceptions import AmfiError, BadDevError, ConnectionFailedError, DeveloperModeError, \
-    DeviceHasPasscodeSetError, NoDeviceConnectedError, PyMobileDevice3Exception
-from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
+from pymobiledevice3.exceptions import AmfiError, DeveloperModeError, DeviceHasPasscodeSetError, \
+    PyMobileDevice3Exception
+from pymobiledevice3.lockdown import LockdownClient, retry_create_using_usbmux
 from pymobiledevice3.services.heartbeat import HeartbeatService
 
 
 class AmfiService:
+
+    DEVELOPER_MODE_REVEAL = 0
+    DEVELOPER_MODE_ENABLE = 1
+    DEVELOPER_MODE_ACCEPT = 2
+
     SERVICE_NAME = 'com.apple.amfi.lockdown'
 
     def __init__(self, lockdown: LockdownClient):
         self._lockdown = lockdown
         self._logger = logging.getLogger(self.__module__)
 
-    def create_amfi_show_override_path_file(self):
+    def reveal_developer_mode_option_in_ui(self):
         """ create an empty file at AMFIShowOverridePath """
         service = self._lockdown.start_lockdown_service(self.SERVICE_NAME)
-        resp = service.send_recv_plist({'action': 0})
+        resp = service.send_recv_plist({'action': self.DEVELOPER_MODE_REVEAL})
         if not resp.get('success'):
             raise PyMobileDevice3Exception(f'create_AMFIShowOverridePath() failed with: {resp}')
 
@@ -31,7 +34,7 @@ class AmfiService:
         with "yes"
         """
         service = self._lockdown.start_lockdown_service(self.SERVICE_NAME)
-        resp = service.send_recv_plist({'action': 1})
+        resp = service.send_recv_plist({'action': self.DEVELOPER_MODE_ENABLE})
         error = resp.get('Error')
 
         if error is not None:
@@ -47,36 +50,15 @@ class AmfiService:
 
         try:
             HeartbeatService(self._lockdown).start()
-        except ConnectionAbortedError:
+        except (ConnectionAbortedError, BrokenPipeError):
             self._logger.debug('device disconnected, awaiting reconnect')
 
-        """
-            Workaround to solve:
-            "OSError: [WinError 10048] Only one usage of each socket address 
-            (protocol/network address/port) is normally permitted" error
-            https://github.com/doronz88/pymobiledevice3/issues/428
-
-            We 
-        """
-        retries = 0
-        max_retries = 60
-        after_reset_lockdown = None
-        while not after_reset_lockdown and retries <= max_retries:
-            try:
-                self._lockdown = create_using_usbmux(self._lockdown.udid)
-                break
-            except (NoDeviceConnectedError, ConnectionFailedError, BadDevError, OSError, construct.core.StreamError):
-                pass
-
-            retries = retries + 1
-            time.sleep(1)
-
-        # We want the user to decide to "Turn on" or "Cancel" after the device has restarted
-        # self.enable_developer_mode_post_restart()
+        self._lockdown = retry_create_using_usbmux(None, serial=self._lockdown.udid)
+        self.enable_developer_mode_post_restart()
 
     def enable_developer_mode_post_restart(self):
         """ answer the prompt that appears after the restart with "yes" """
         service = self._lockdown.start_lockdown_service(self.SERVICE_NAME)
-        resp = service.send_recv_plist({'action': 2})
+        resp = service.send_recv_plist({'action': self.DEVELOPER_MODE_ACCEPT})
         if not resp.get('success'):
             raise DeveloperModeError(f'enable_developer_mode_post_restart() failed: {resp}')

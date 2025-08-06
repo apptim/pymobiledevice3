@@ -68,12 +68,19 @@ SUPPORTED_DATA_TYPES = {
     'RestoreLocalPolicy': True,
     'AuthInstallCACert': True,
     'OverlayRootDataForKeyIndex': True,
+
+    # Added in iOS 18.0 beta1
+    'FirmwareUpdaterDataV3': True,
+    'MessageUseStreamedImageFile': True,
+    'UpdateVolumeOverlayRootDataCount': True,
+    'URLAsset': True,
 }
 
 # extracted from ac2
 SUPPORTED_MESSAGE_TYPES = {
     'BBUpdateStatusMsg': False,
     'CheckpointMsg': True,
+    'CrashLog': True,
     'DataRequestMsg': False,
     'FDRSubmit': True,
     'MsgType': False,
@@ -85,24 +92,32 @@ SUPPORTED_MESSAGE_TYPES = {
     'ReceivedFinalStatusMsg': False,
     'RestoredCrash': True,
     'StatusMsg': False,
+
+    # Added in iOS 18.0 beta1
+    'AsyncDataRequestMsg': True,
+    'AsyncWait': True,
+    'RestoreAttestation': True,
 }
 
 
 class RestoreOptions:
 
-    def __init__(self, preflight_info=None, sep=None, macos_variant=None, build_identity: BuildIdentity = None,
+    def __init__(self, firmware_preflight_info=None, sep=None, macos_variant=None, build_identity: BuildIdentity = None,
                  restore_boot_args=None, spp=None, restore_behavior: str = None, msp=None):
         self.AutoBootDelay = 0
 
-        if preflight_info is not None:
-            bbus = dict(preflight_info)
-            bbus.pop('FusingStatus')
-            bbus.pop('PkHash')
-            self.BBUpdaterState = bbus
+        try:
+            if firmware_preflight_info is not None:
+                bbus = dict(firmware_preflight_info)
+                bbus.pop('FusingStatus')
+                bbus.pop('PkHash')
+                self.BBUpdaterState = bbus
 
-            nonce = preflight_info.get('Nonce')
-            if nonce is not None:
-                self.BasebandNonce = nonce
+                nonce = firmware_preflight_info.get('Nonce')
+                if nonce is not None:
+                    self.BasebandNonce = nonce
+        except KeyError as e:
+            logger.warning(f'Skipping addition of firmware_preflight_info due to: {e}')
 
         self.SupportedDataTypes = SUPPORTED_DATA_TYPES
         self.SupportedMessageTypes = SUPPORTED_MESSAGE_TYPES
@@ -155,6 +170,18 @@ class RestoreOptions:
             self.SystemImageType = 'User'
             self.UpdateBaseband = False
 
+            # Added for iOS 18.0 beta1
+            self.HostHasFixFor99053849 = True
+            self.SystemImageFormat = 'AEAWrappedDiskImage'
+            self.WaitForDeviceConnectionToFinishStateMachine = False
+            self.SupportedAsyncDataTypes = {
+                'BasebandData': False,
+                'RecoveryOSASRImage': False,
+                'StreamedImageDecryptionKey': False,
+                'SystemImageData': False,
+                'URLAsset': True
+            }
+
             if sep is not None:
                 required_capacity = sep.get('RequiredCapacity')
                 if required_capacity:
@@ -174,7 +201,17 @@ class RestoreOptions:
         if spp:
             spp = dict(spp)
         else:
-            spp = {'128': 1280, '16': 160, '32': 320, '64': 640, '8': 80}
+            spp = {
+                '1024': 1280,
+                '128': 1280,
+                '16': 160,
+                '256': 1280,
+                '32': 320,
+                '512': 1280,
+                '64': 640,
+                '768': 1280,
+                '8': 80
+            }
         self.SystemPartitionPadding = spp
 
     def to_dict(self):

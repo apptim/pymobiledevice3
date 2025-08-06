@@ -7,11 +7,12 @@ import posixpath
 import shlex
 import signal
 import sys
+import time
 from collections import namedtuple
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import IO, Optional
 
 import click
 from click.exceptions import MissingParameter, UsageError
@@ -21,15 +22,18 @@ from pykdebugparser.pykdebugparser import PyKdebugParser
 import pymobiledevice3
 from pymobiledevice3.cli.cli_common import BASED_INT, Command, RSDCommand, default_json_encoder, print_json, \
     user_requested_colored_output
-from pymobiledevice3.exceptions import ArgumentError, DeviceAlreadyInUseError, DvtDirListError, \
+from pymobiledevice3.exceptions import CoreDeviceError, DeviceAlreadyInUseError, DvtDirListError, \
     ExtractingStackshotError, RSDRequiredError, UnrecognizedSelectorError
-from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
 from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.osu.os_utils import get_os_utils
 from pymobiledevice3.remote.core_device.app_service import AppServiceService
 from pymobiledevice3.remote.core_device.device_info import DeviceInfoService
+from pymobiledevice3.remote.core_device.diagnostics_service import DiagnosticsServiceService
+from pymobiledevice3.remote.core_device.file_service import APPLE_DOMAIN_DICT, FileServiceService
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.services.accessibilityaudit import AccessibilityAudit
+from pymobiledevice3.services.crash_reports import CrashReportsManager
 from pymobiledevice3.services.debugserver_applist import DebugServerAppList
 from pymobiledevice3.services.device_arbitration import DtDeviceArbitration
 from pymobiledevice3.services.dtfetchsymbols import DtFetchSymbols
@@ -53,6 +57,7 @@ from pymobiledevice3.services.remote_server import RemoteServer
 from pymobiledevice3.services.screenshot import ScreenshotService
 from pymobiledevice3.services.simulate_location import DtSimulateLocation
 from pymobiledevice3.tcp_forwarder import LockdownTcpForwarder
+from pymobiledevice3.utils import try_decode
 
 OSUTILS = get_os_utils()
 BSC_SUBCLASS = 0x40c
@@ -74,15 +79,14 @@ logger = logging.getLogger(__name__)
 
 
 @click.group()
-def cli():
-    """ developer cli """
+def cli() -> None:
     pass
 
 
 @cli.group()
-def developer():
+def developer() -> None:
     """
-    developer options.
+    Perform developer operations (Requires enable of Developer-Mode)
 
     These options require the DeveloperDiskImage.dmg to be mounted on the device prior
     to execution. You can achieve this using:
@@ -100,20 +104,20 @@ def developer():
 @click.argument('service')
 @click.option('-r', '--remove-ssl-context', is_flag=True)
 def developer_shell(service_provider: LockdownClient, service, remove_ssl_context):
-    """ Launch developer shell. """
+    """ Launch developer IPython shell (used for pymobiledevice3 R&D) """
     with RemoteServer(service_provider, service, remove_ssl_context) as service:
         service.shell()
 
 
 @developer.group()
-def dvt():
-    """ dvt operations """
+def dvt() -> None:
+    """ Access advanced instrumentation APIs """
     pass
 
 
 @dvt.command('proclist', cls=Command)
-def proclist(service_provider: LockdownClient):
-    """ show process list """
+def proclist(service_provider: LockdownClient) -> None:
+    """ Show process list """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         processes = DeviceInfo(dvt).proclist()
         for process in processes:
@@ -122,10 +126,23 @@ def proclist(service_provider: LockdownClient):
 
         print_json(processes)
 
+@dvt.command('is-running-pid', cls=Command)
+@click.argument('pid', type=click.INT)
+def is_running_pid(service_provider: LockdownClient, pid: int) -> None:
+    """ Simple check if PID is running """
+    with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
+        print_json(DeviceInfo(dvt).is_running_pid(pid))
+
+@dvt.command('memlimitoff', cls=Command)
+@click.argument('pid', type=click.INT)
+def memlimitoff(service_provider: LockdownServiceProvider, pid: int) -> None:
+    """ Disable process memory limit """
+    with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
+        ProcessControl(dvt).disable_memory_limit_for_pid(pid)
 
 @dvt.command('applist', cls=Command)
 def applist(service_provider: LockdownServiceProvider) -> None:
-    """ show application list """
+    """ Show application list """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         apps = ApplicationListing(dvt).applist()
         print_json(apps)
@@ -135,8 +152,8 @@ def applist(service_provider: LockdownServiceProvider) -> None:
 @click.argument('pid', type=click.INT)
 @click.argument('sig', type=click.INT, required=False)
 @click.option('-s', '--signal-name', type=click.Choice([s.name for s in signal.Signals]))
-def send_signal(service_provider, pid, sig, signal_name):
-    """ Send SIGNAL to process by its PID """
+def send_signal(service_provider, pid, sig, signal_name) -> None:
+    """ Send a signal to process by its PID """
     if not sig and not signal_name:
         raise MissingParameter(param_type='argument|option', param_hint='\'SIG|SIGNAL-NAME\'')
     if sig and signal_name:
@@ -148,15 +165,23 @@ def send_signal(service_provider, pid, sig, signal_name):
 
 @dvt.command('kill', cls=Command)
 @click.argument('pid', type=click.INT)
-def kill(service_provider: LockdownClient, pid):
+def kill(service_provider: LockdownClient, pid) -> None:
     """ Kill a process by its pid. """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         ProcessControl(dvt).kill(pid)
 
 
+@dvt.command(cls=Command)
+@click.argument('app_bundle_identifier')
+def process_id_for_bundle_id(service_provider: LockdownServiceProvider, app_bundle_identifier: str) -> None:
+    """ Get PID of a bundle identifier (only returns a valid value if its running). """
+    with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
+        print(ProcessControl(dvt).process_identifier_for_bundle_identifier(app_bundle_identifier))
+
+
 def get_matching_processes(service_provider: LockdownServiceProvider, name: Optional[str] = None,
                            bundle_identifier: Optional[str] = None) \
-        -> List[MatchedProcessByPid]:
+        -> list[MatchedProcessByPid]:
     result = []
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         device_info = DeviceInfo(dvt)
@@ -213,7 +238,7 @@ def launch(service_provider: LockdownClient, arguments: str, kill_existing: bool
 
 @dvt.command('shell', cls=Command)
 def dvt_shell(service_provider: LockdownClient):
-    """ Launch developer shell. """
+    """ Launch developer shell (used for pymobiledevice3 R&D) """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         dvt.shell()
 
@@ -235,14 +260,14 @@ def show_dirlist(device_info: DeviceInfo, dirname, recursive=False):
 @click.argument('path', type=click.Path(exists=False, readable=False))
 @click.option('-r', '--recursive', is_flag=True)
 def ls(service_provider: LockdownClient, path, recursive):
-    """ List directory. """
+    """ List directory """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         show_dirlist(DeviceInfo(dvt), path, recursive=recursive)
 
 
 @dvt.command('device-information', cls=Command)
 def device_information(service_provider: LockdownClient):
-    """ Print system information. """
+    """ Print system information """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         device_info = DeviceInfo(dvt)
         info = {
@@ -273,7 +298,7 @@ def netstat(service_provider: LockdownClient):
 @dvt.command('screenshot', cls=Command)
 @click.argument('out', type=click.File('wb'))
 def screenshot(service_provider: LockdownClient, out):
-    """ get device screenshot """
+    """ Take device screenshot """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         out.write(Screenshot(dvt).get_screenshot())
 
@@ -282,12 +307,10 @@ def screenshot(service_provider: LockdownClient, out):
 @click.argument('bundle-id')
 def xcuitest(service_provider: LockdownClient, bundle_id: str) -> None:
     """\b
-    start XCUITest
+    Start XCUITest
+
     Usage example:
-    iOS<17:
         python3 -m pymobiledevice3 developer dvt xcuitest com.facebook.WebDriverAgentRunner.xctrunner
-    iOS>=17:
-        python3 -m pymobiledevice3 developer dvt xcuitest com.facebook.WebDriverAgentRunner.xctrunner --tunnel $UDID
     """
     XCUITestService(service_provider).run(bundle_id)
 
@@ -315,7 +338,8 @@ def sysmon_process_monitor(service_provider: LockdownClient, threshold):
                 entries = []
                 for process in process_snapshot:
                     if (process['cpuUsage'] is not None) and (process['cpuUsage'] >= threshold):
-                        entries.append(Process(pid=process['pid'], name=process['name'], cpuUsage=process['cpuUsage'], physFootprint=process['physFootprint']))
+                        entries.append(Process(pid=process['pid'], name=process['name'], cpuUsage=process['cpuUsage'],
+                                               physFootprint=process['physFootprint']))
 
                 logger.info(entries)
 
@@ -323,7 +347,7 @@ def sysmon_process_monitor(service_provider: LockdownClient, threshold):
 @sysmon_process.command('single', cls=Command)
 @click.option('-a', '--attributes', multiple=True,
               help='filter processes by given attribute value given as key=value')
-def sysmon_process_single(service_provider: LockdownClient, attributes: List[str]):
+def sysmon_process_single(service_provider: LockdownClient, attributes: list[str]):
     """ show a single snapshot of currently running processes. """
 
     count = 0
@@ -372,12 +396,29 @@ def sysmon_system(service_provider: LockdownClient, fields):
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         sysmontap = Sysmontap(dvt)
         with sysmontap as sysmon:
+            system = None
+            system_usage = None
+            system_usage_seen = False  # Tracks if the first occurrence of SystemCPUUsage
+
             for row in sysmon:
-                if 'System' in row:
+                if 'System' in row and system is None:
                     system = sysmon.system_attributes_cls(*row['System'])
+
+                if 'SystemCPUUsage' in row:
+                    if system_usage_seen:
+                        system_usage = {
+                            **row['SystemCPUUsage'], **{
+                                'CPUCount': row['CPUCount'],
+                                'EnabledCPUs': row['EnabledCPUs'],
+                            }
+                        }
+                    else: # Ignore the first occurrence because first occurrence always gives a incorrect value - 100 or 0
+                        system_usage_seen = True
+
+                if system and system_usage:
                     break
 
-    attrs_dict = asdict(system)
+    attrs_dict = {**asdict(system), **system_usage}
     for name, value in attrs_dict.items():
         if (fields is None) or (name in fields):
             print(f'{name}: {value}')
@@ -385,7 +426,7 @@ def sysmon_system(service_provider: LockdownClient, fields):
 
 @dvt.group('core-profile-session')
 def core_profile_session():
-    """ Core profile session options. """
+    """ Access tailspin features """
 
 
 bsc_filter = click.option('--bsc/--no-bsc', default=False, help='Whether to print BSC events or not.')
@@ -395,7 +436,7 @@ subclass_filter = click.option('-sf', '--subclass-filters', multiple=True, type=
                                help='Events subclass filter. Omit for all.')
 
 
-def parse_filters(subclasses: List[int], classes: List[int]):
+def parse_filters(subclasses: list[int], classes: list[int]):
     if not subclasses and not classes:
         return None
     parsed = set()
@@ -517,6 +558,7 @@ def parse_live_profile_session(service_provider: LockdownClient, count, tid, sho
         parser.filter_tid = tid
         parser.filter_process = process
         parser.show_tid = show_tid
+        parser.color = user_requested_colored_output()
 
         with CoreProfileSessionTap(dvt, time_config, filters) as tap:
             if show_tid:
@@ -526,7 +568,7 @@ def parse_live_profile_session(service_provider: LockdownClient, count, tid, sho
 
             i = 0
             for trace in parser.formatted_traces(tap.get_kdbuf_stream()):
-                print(trace)
+                print(trace, flush=True)
                 i += 1
                 if i == count:
                     break
@@ -613,7 +655,7 @@ def dvt_name_for_gid(service_provider: LockdownClient, gid):
 @dvt.command('oslog', cls=Command)
 @click.option('--pid', type=click.INT)
 def dvt_oslog(service_provider: LockdownClient, pid):
-    """ oslog. """
+    """ Sniff device oslog (not very stable, but includes more data and normal syslog) """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         with ActivityTraceTap(dvt) as tap:
             for message in tap:
@@ -650,7 +692,7 @@ def dvt_oslog(service_provider: LockdownClient, pid):
 @dvt.command('energy', cls=Command)
 @click.argument('pid-list', nargs=-1)
 def dvt_energy(service_provider: LockdownClient, pid_list):
-    """ energy monitoring for given pid list. """
+    """ Monitor the energy consumption for given PIDs """
 
     if len(pid_list) == 0:
         logger.error('pid_list must not be empty')
@@ -666,7 +708,7 @@ def dvt_energy(service_provider: LockdownClient, pid_list):
 
 @dvt.command('notifications', cls=Command)
 def dvt_notifications(service_provider: LockdownClient):
-    """ monitor memory and app notifications """
+    """ Monitor memory and app notifications """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         with Notifications(dvt) as notifications:
             for notification in notifications:
@@ -675,7 +717,7 @@ def dvt_notifications(service_provider: LockdownClient):
 
 @dvt.command('graphics', cls=Command)
 def dvt_notifications(service_provider: LockdownClient):
-    """ monitor graphics statistics """
+    """ Monitor graphics-related information """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         with Graphics(dvt) as graphics:
             for stats in graphics:
@@ -684,7 +726,7 @@ def dvt_notifications(service_provider: LockdownClient):
 
 @developer.group('fetch-symbols')
 def fetch_symbols():
-    """ fetch-symbols options. """
+    """ Download the DSC (and dyld) from the device """
     pass
 
 
@@ -693,7 +735,7 @@ async def fetch_symbols_list_task(service_provider: LockdownServiceProvider) -> 
         print_json(DtFetchSymbols(service_provider).list_files())
     else:
         if not isinstance(service_provider, RemoteServiceDiscoveryService):
-            raise RSDRequiredError(service_provider.udid)
+            raise RSDRequiredError(service_provider.identifier)
 
         async with RemoteFetchSymbolsService(service_provider) as fetch_symbols:
             print_json([f.file_path for f in await fetch_symbols.get_dsc_file_list()])
@@ -706,9 +748,6 @@ def fetch_symbols_list(service_provider: LockdownServiceProvider) -> None:
 
 
 async def fetch_symbols_download_task(service_provider: LockdownServiceProvider, out: str) -> None:
-    if not isinstance(service_provider, RemoteServiceDiscoveryService):
-        raise RSDRequiredError(service_provider.udid)
-
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -735,6 +774,8 @@ async def fetch_symbols_download_task(service_provider: LockdownServiceProvider,
                 logger.info(f'writing to: {file}')
                 fetch_symbols.get_file(i, f)
     else:
+        if not isinstance(service_provider, RemoteServiceDiscoveryService):
+            raise RSDRequiredError(service_provider.identifier)
         async with RemoteFetchSymbolsService(service_provider) as fetch_symbols:
             await fetch_symbols.download(out)
 
@@ -748,7 +789,7 @@ def fetch_symbols_download(service_provider: LockdownServiceProvider, out: str) 
 
 @developer.group('simulate-location')
 def simulate_location():
-    """ simulate-location options. """
+    """ Simulate device location by given input """
     pass
 
 
@@ -781,7 +822,7 @@ def simulate_location_play(service_provider: LockdownClient, filename, timing_ra
 
 @developer.group('accessibility')
 def accessibility():
-    """ accessibility options. """
+    """ Interact with accessibility-related features """
     pass
 
 
@@ -833,6 +874,15 @@ def accessibility_settings_set(service_provider: LockdownClient, setting, value)
     OSUTILS.wait_return()
 
 
+@accessibility_settings.command('reset', cls=Command)
+def accessibility_settings_reset(service_provider: LockdownClient):
+    """
+    reset accessibility settings to default
+    """
+    service = AccessibilityAudit(service_provider)
+    service.reset_settings()
+
+
 @accessibility.command('shell', cls=Command)
 def accessibility_shell(service_provider: LockdownClient):
     """ start and ipython accessibility shell """
@@ -853,44 +903,25 @@ def accessibility_notifications(service_provider: LockdownClient):
 
 @accessibility.command('list-items', cls=Command)
 def accessibility_list_items(service_provider: LockdownClient):
-    """ list items available in currently shown menu """
+    """List elements available in the currently shown menu."""
 
-    service = AccessibilityAudit(service_provider)
-    iterator = service.iter_events()
-
-    # every focus change is expected publish a "hostInspectorCurrentElementChanged:"
-    service.move_focus_next()
-
-    first_item = None
-
-    for event in iterator:
-        if event.name != 'hostInspectorCurrentElementChanged:':
-            # ignore any other events
-            continue
-
-        # each such event should contain exactly one element that became in focus
-        current_item = event.data[0]
-
-        if first_item is None:
-            first_item = current_item
-        else:
-            if first_item.caption == current_item.caption:
-                return
-
-        print(f'{current_item.caption}: {current_item.element.identifier}')
-        service.move_focus_next()
+    elements = []
+    with AccessibilityAudit(service_provider) as service:
+        for element in service.iter_elements():
+            elements.append(element.to_dict())
+    print_json(elements)
 
 
 @developer.group('condition')
 def condition():
-    """ condition inducer options. """
+    """ Force a predefined condition """
     pass
 
 
 @condition.command('list', cls=Command)
-def condition_list(lockdown: LockdownClient):
+def condition_list(service_provider: LockdownServiceProvider) -> None:
     """ list all available conditions """
-    with DvtSecureSocketProxyService(lockdown=lockdown) as dvt:
+    with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         print_json(ConditionInducer(dvt).list())
 
 
@@ -913,19 +944,19 @@ def condition_set(service_provider: LockdownClient, profile_identifier):
 @developer.command(cls=Command)
 @click.argument('out', type=click.File('wb'))
 def screenshot(service_provider: LockdownClient, out):
-    """ take a screenshot in PNG format """
+    """ Take a screenshot in PNG format """
     out.write(ScreenshotService(lockdown=service_provider).take_screenshot())
 
 
 @developer.group('debugserver')
 def debugserver():
-    """ debugserver options. """
+    """ Interact with debugserver """
     pass
 
 
 @debugserver.command('applist', cls=Command)
 def debugserver_applist(service_provider: LockdownClient):
-    """ get applist xml """
+    """ Get applist xml """
     print_json(DebugServerAppList(service_provider).get())
 
 
@@ -936,7 +967,7 @@ def debugserver_start_server(service_provider: LockdownClient, local_port: Optio
     if local_port is provided, start a debugserver at remote listening on a given port locally.
     if local_port is not provided and iOS version >= 17.0 then just print the connect string
 
-    Please note the connection must be done soon afterwards using your own lldb client.
+    Please note the connection must be done soon afterward using your own lldb client.
     This can be done using the following commands within lldb shell.
     """
 
@@ -961,7 +992,7 @@ def debugserver_start_server(service_provider: LockdownClient, local_port: Optio
 
 @developer.group('arbitration')
 def arbitration():
-    """ arbitration options. """
+    """ Mark/Unmark device as "in-use" """
     pass
 
 
@@ -994,7 +1025,12 @@ def check_out(service_provider: LockdownClient):
 
 @dvt.command('har', cls=Command)
 def dvt_har(service_provider: LockdownClient):
-    """ enable har-logging """
+    """
+    Enable har-logging
+
+    For more information, please read:
+        https://github.com/doronz88/harlogger?tab=readme-ov-file#enable-http-instrumentation-method
+    """
     with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
         print('> Press Ctrl-C to abort')
         with ActivityTraceTap(dvt, enable_http_archive_logging=True) as tap:
@@ -1004,13 +1040,13 @@ def dvt_har(service_provider: LockdownClient):
 
 @dvt.group('simulate-location')
 def dvt_simulate_location():
-    """ simulate-location options. """
+    """ Simulate device location by given input """
     pass
 
 
 @dvt_simulate_location.command('clear', cls=Command)
 def dvt_simulate_location_clear(service_provider: LockdownClient):
-    """ clear simulated location """
+    """ Clear currently simulated location """
     with DvtSecureSocketProxyService(service_provider) as dvt:
         LocationSimulation(dvt).clear()
 
@@ -1020,8 +1056,8 @@ def dvt_simulate_location_clear(service_provider: LockdownClient):
 @click.argument('longitude', type=click.FLOAT)
 def dvt_simulate_location_set(service_provider: LockdownClient, latitude, longitude):
     """
-    set a simulated location.
-    try:
+    Set a simulated location.
+    For example:
         ... set -- 40.690008 -74.045843 for liberty island
     """
     with DvtSecureSocketProxyService(service_provider) as dvt:
@@ -1035,7 +1071,7 @@ def dvt_simulate_location_set(service_provider: LockdownClient, latitude, longit
 @click.option('--disable-sleep', is_flag=True, default=False)
 def dvt_simulate_location_play(service_provider: LockdownClient, filename: str, timing_randomness_range: int,
                                disable_sleep: bool) -> None:
-    """ play a .gpx file """
+    """ Simulate inputs from a given .gpx file """
     with DvtSecureSocketProxyService(service_provider) as dvt:
         LocationSimulation(dvt).play_gpx_file(filename, disable_sleep=disable_sleep,
                                               timing_randomness_range=timing_randomness_range)
@@ -1044,13 +1080,74 @@ def dvt_simulate_location_play(service_provider: LockdownClient, filename: str, 
 
 @developer.group()
 def core_device() -> None:
-    """ core-device options """
+    """ Access features exposed by the DeveloperDiskImage """
     pass
 
 
+async def core_device_list_directory_task(
+        service_provider: RemoteServiceDiscoveryService, domain: str, path: str, identifier: str) -> None:
+    async with FileServiceService(service_provider, APPLE_DOMAIN_DICT[domain], identifier) as file_service:
+        print_json(await file_service.retrieve_directory_list(path))
+
+
+@core_device.command('list-directory', cls=RSDCommand)
+@click.argument('domain', type=click.Choice(APPLE_DOMAIN_DICT.keys()))
+@click.argument('path')
+@click.option('--identifier', default='')
+def core_device_list_directory(
+        service_provider: RemoteServiceDiscoveryService, domain: str, path: str, identifier: str) -> None:
+    """ List directory at given domain-path """
+    asyncio.run(core_device_list_directory_task(service_provider, domain, path, identifier))
+
+
+async def core_device_read_file_task(
+        service_provider: RemoteServiceDiscoveryService, domain: str, path: str, identifier: str, output: Optional[IO]) -> None:
+    async with FileServiceService(service_provider, APPLE_DOMAIN_DICT[domain], identifier) as file_service:
+        buf = await file_service.retrieve_file(path)
+        if output is not None:
+            output.write(buf)
+        else:
+            print(try_decode(buf))
+
+
+@core_device.command('read-file', cls=RSDCommand)
+@click.argument('domain', type=click.Choice(APPLE_DOMAIN_DICT.keys()))
+@click.argument('path')
+@click.option('--identifier', default='')
+@click.option('-o', '--output', type=click.File('wb'))
+def core_device_read_file(
+        service_provider: RemoteServiceDiscoveryService, domain: str, path: str, identifier: str, output: Optional[IO]) -> None:
+    """ Read file from given domain-path """
+    asyncio.run(core_device_read_file_task(service_provider, domain, path, identifier, output))
+
+
+async def core_device_propose_empty_file_task(
+        service_provider: RemoteServiceDiscoveryService, domain: str, path: str, identifier: str, file_permissions: int,
+        uid: int, gid: int, creation_time: int, last_modification_time: int) -> None:
+    async with FileServiceService(service_provider, APPLE_DOMAIN_DICT[domain], identifier) as file_service:
+        await file_service.propose_empty_file(path, file_permissions, uid, gid, creation_time, last_modification_time)
+
+
+@core_device.command('propose-empty-file', cls=RSDCommand)
+@click.argument('domain', type=click.Choice(APPLE_DOMAIN_DICT.keys()))
+@click.argument('path')
+@click.option('--identifier', default='')
+@click.option('--file-permissions', type=click.INT, default=0o644)
+@click.option('--uid', type=click.INT, default=501)
+@click.option('--gid', type=click.INT, default=501)
+@click.option('--creation-time', type=click.INT, default=time.time())
+@click.option('--last-modification-time', type=click.INT, default=time.time())
+def core_device_propose_empty_file(
+        service_provider: RemoteServiceDiscoveryService, domain: str, path: str, identifier: str, file_permissions: int,
+        uid: int, gid: int, creation_time: int, last_modification_time: int) -> None:
+    """ Write an empty file to given domain-path """
+    asyncio.run(core_device_propose_empty_file_task(service_provider, domain, path, identifier, file_permissions, uid,
+                                                    gid, creation_time, last_modification_time))
+
+
 async def core_device_list_launch_application_task(
-        service_provider: RemoteServiceDiscoveryService, bundle_identifier: str, argument: List[str],
-        kill_existing: bool, suspended: bool, env: List[Tuple[str, str]]) -> None:
+        service_provider: RemoteServiceDiscoveryService, bundle_identifier: str, argument: list[str],
+        kill_existing: bool, suspended: bool, env: list[tuple[str, str]]) -> None:
     async with AppServiceService(service_provider) as app_service:
         print_json(await app_service.launch_application(bundle_identifier, argument, kill_existing,
                                                         suspended, dict(env)))
@@ -1065,8 +1162,8 @@ async def core_device_list_launch_application_task(
 @click.option('--env', multiple=True, type=click.Tuple((str, str)),
               help='Environment variables to pass to process given as a list of key value')
 def core_device_launch_application(
-        service_provider: RemoteServiceDiscoveryService, bundle_identifier: str, argument: Tuple[str],
-        kill_existing: bool, suspended: bool, env: List[Tuple[str, str]]) -> None:
+        service_provider: RemoteServiceDiscoveryService, bundle_identifier: str, argument: tuple[str],
+        kill_existing: bool, suspended: bool, env: list[tuple[str, str]]) -> None:
     """ Launch application """
     asyncio.run(
         core_device_list_launch_application_task(
@@ -1133,7 +1230,7 @@ def core_device_get_display_info(service_provider: RemoteServiceDiscoveryService
     asyncio.run(core_device_get_display_info_task(service_provider))
 
 
-async def core_device_query_mobilegestalt_task(service_provider: RemoteServiceDiscoveryService, key: List[str]) -> None:
+async def core_device_query_mobilegestalt_task(service_provider: RemoteServiceDiscoveryService, key: list[str]) -> None:
     """ Query MobileGestalt """
     async with DeviceInfoService(service_provider) as app_service:
         print_json(await app_service.query_mobilegestalt(key))
@@ -1141,7 +1238,7 @@ async def core_device_query_mobilegestalt_task(service_provider: RemoteServiceDi
 
 @core_device.command('query-mobilegestalt', cls=RSDCommand)
 @click.argument('key', nargs=-1, type=click.STRING)
-def core_device_query_mobilegestalt(service_provider: RemoteServiceDiscoveryService, key: Tuple[str]) -> None:
+def core_device_query_mobilegestalt(service_provider: RemoteServiceDiscoveryService, key: tuple[str]) -> None:
     """ Query MobileGestalt """
     asyncio.run(core_device_query_mobilegestalt_task(service_provider, list(key)))
 
@@ -1166,3 +1263,26 @@ async def core_device_list_apps_task(service_provider: RemoteServiceDiscoverySer
 def core_device_list_apps(service_provider: RemoteServiceDiscoveryService) -> None:
     """ Get application list """
     asyncio.run(core_device_list_apps_task(service_provider))
+
+
+async def core_device_sysdiagnose_task(service_provider: RemoteServiceDiscoveryService, output: str) -> None:
+    output = Path(output)
+    async with DiagnosticsServiceService(service_provider) as service:
+        response = await service.capture_sysdiagnose(False)
+        logger.info(f'Operation response: {response}')
+        if output.is_dir():
+            output /= response.preferred_filename
+        logger.info(f'Downloading sysdiagnose to: {output}')
+
+        # get the file over lockdownd which is WAYYY faster
+        lockdown = create_using_usbmux(service_provider.udid)
+        with CrashReportsManager(lockdown) as crash_reports_manager:
+            crash_reports_manager.afc.pull(posixpath.join(f'/DiagnosticLogs/sysdiagnose/{response.preferred_filename}'),
+                                           output)
+
+
+@core_device.command('sysdiagnose', cls=RSDCommand)
+@click.argument('output', type=click.Path(dir_okay=True, file_okay=True, exists=True))
+def core_device_sysdiagnose(service_provider: RemoteServiceDiscoveryService, output: str) -> None:
+    """ Execute sysdiagnose and fetch the output file """
+    asyncio.run(core_device_sysdiagnose_task(service_provider, output))

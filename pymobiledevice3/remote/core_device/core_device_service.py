@@ -1,12 +1,12 @@
 import uuid
-from typing import Any, Mapping
+from typing import Any, Optional
 
 from pymobiledevice3.exceptions import CoreDeviceError
 from pymobiledevice3.remote.remote_service import RemoteService
 from pymobiledevice3.remote.xpc_message import XpcInt64Type, XpcUInt64Type
 
 
-def _generate_core_device_version_dict(version: str) -> Mapping:
+def _generate_core_device_version_dict(version: str) -> dict:
     version_components = version.split('.')
     return {'components': [XpcUInt64Type(component) for component in version_components],
             'originalComponentsCount': XpcInt64Type(len(version_components)),
@@ -17,10 +17,10 @@ CORE_DEVICE_VERSION = _generate_core_device_version_dict('325.3')
 
 
 class CoreDeviceService(RemoteService):
-    def invoke(self, feature_identifier: str, input_: Mapping = None) -> Any:
+    async def invoke(self, feature_identifier: str, input_: Optional[dict] = None) -> Any:
         if input_ is None:
             input_ = {}
-        response = self.service.send_receive_request({
+        response = await self.service.send_receive_request({
             'CoreDevice.CoreDeviceDDIProtocolVersion': XpcInt64Type(0),
             'CoreDevice.action': {},
             'CoreDevice.coreDeviceVersion': CORE_DEVICE_VERSION,

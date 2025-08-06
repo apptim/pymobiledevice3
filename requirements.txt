@@ -9,7 +9,7 @@ hexdump
 arrow
 daemonize
 gpxpy<1.6.0
-pykdebugparser>=1.2.4
+pykdebugparser>=1.2.7
 pyusb>=1.2.1
 tqdm
 requests
@@ -18,7 +18,7 @@ parameter_decorators
 packaging
 pygnuutils>=0.0.7
 cryptography>=41.0.1
-pycrashreport>=1.2.2
+pycrashreport>=1.2.4
 fastapi[all]>=0.93.0
 uvicorn>=0.15.0
 starlette
@@ -26,23 +26,19 @@ wsproto
 nest_asyncio>=1.5.5
 Pillow
 inquirer3>=0.6.0
-pyimg4>=0.8
-ipsw_parser>=1.1.2
-remotezip
-zeroconf
+ipsw_parser>=1.3.4
+remotezip2
+zeroconf>=0.132.2
 ifaddr
 hyperframe
 srptools
-qh3>=0.11.5
+qh3>=1.0.0,<2
 developer_disk_image>=0.0.2
-opack
+opack2
 psutil
-pytun-pmd3>=2.0.8
-aiofiles
+pytun-pmd3>=2.2.2
 prompt_toolkit
-sslpsk-pmd3>=1.0.3
+sslpsk-pmd3>=1.0.3;python_version<'3.13'
 python-pcapng>=2.1.1
-
-# TODO: temporary workaround until python-editor, sub-dep of inquirer3, is 3.12 friendly
-# https://github.com/python/cpython/issues/92584
-setuptools>=66.1; python_version >= '3.12'
+plumbum
+pyimg4>=0.8.8

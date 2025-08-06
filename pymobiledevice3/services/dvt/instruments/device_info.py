@@ -32,7 +32,7 @@ class DeviceInfo:
         self._channel.execnameForPid_(MessageAux().append_obj(pid))
         return self._channel.receive_plist()
 
-    def proclist(self) -> typing.List[typing.Mapping]:
+    def proclist(self) -> list[dict]:
         """
         Get the process list from the device.
         :return: List of process and their attributes.
@@ -44,6 +44,15 @@ class DeviceInfo:
             if 'startDate' in process:
                 process['startDate'] = datetime.fromtimestamp(process['startDate'])
         return result
+
+    def is_running_pid(self, pid: int) -> bool:
+        """
+        check if pid is running
+        :param pid: process identifier
+        :return: whether if it is running or not
+        """
+        self._channel.isRunningPid_(MessageAux().append_obj(pid))
+        return self._channel.receive_plist()
 
     def system_information(self):
         return self.request_information('systemInformation')
@@ -60,7 +69,7 @@ class DeviceInfo:
     def mach_kernel_name(self) -> str:
         return self.request_information('machKernelName')
 
-    def kpep_database(self) -> typing.Optional[typing.Mapping]:
+    def kpep_database(self) -> typing.Optional[dict]:
         kpep_database = self.request_information('kpepDatabase')
         if kpep_database is not None:
             return plistlib.loads(kpep_database)

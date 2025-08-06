@@ -1,8 +1,9 @@
 import hashlib
+import logging
 import plistlib
 import sys
 from pathlib import Path
-from typing import List, Mapping
+from typing import Optional
 
 from developer_disk_image.repo import DeveloperDiskImageRepository
 from packaging.version import Version
@@ -17,12 +18,16 @@ from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.restore.tss import TSSRequest
 from pymobiledevice3.services.lockdown_service import LockdownService
 
+logger = logging.getLogger(__name__)
+
+LATEST_DDI_BUILD_ID = '16E5121h'
+
 
 class MobileImageMounterService(LockdownService):
     # implemented in /usr/libexec/mobile_storage_proxy
     SERVICE_NAME = 'com.apple.mobile.mobile_image_mounter'
     RSD_SERVICE_NAME = 'com.apple.mobile.mobile_image_mounter.shim.remote'
-    IMAGE_TYPE: str = None
+    IMAGE_TYPE: Optional[str] = None
 
     def __init__(self, lockdown: LockdownServiceProvider):
         if isinstance(lockdown, LockdownClient):
@@ -36,7 +41,7 @@ class MobileImageMounterService(LockdownService):
         if Version(self.lockdown.product_version).major >= 16 and not self.lockdown.developer_mode_status:
             raise DeveloperModeIsNotEnabledError()
 
-    def copy_devices(self) -> List[Mapping]:
+    def copy_devices(self) -> list[dict]:
         """ Copy mounted devices list. """
         try:
             return self.service.send_recv_plist({'Command': 'CopyDevices'})['EntryList']
@@ -85,7 +90,7 @@ class MobileImageMounterService(LockdownService):
             else:
                 raise PyMobileDevice3Exception(response)
 
-    def mount_image(self, image_type: str, signature: bytes, extras: Mapping = None) -> None:
+    def mount_image(self, image_type: str, signature: bytes, extras: Optional[dict] = None) -> None:
         """ Upload image into device. """
 
         if self.is_image_mounted(image_type):
@@ -136,7 +141,7 @@ class MobileImageMounterService(LockdownService):
         except KeyError as e:
             raise MessageNotSupportedError from e
 
-    def query_nonce(self, personalized_image_type: str = None) -> bytes:
+    def query_nonce(self, personalized_image_type: Optional[str] = None) -> bytes:
         request = {'Command': 'QueryNonce'}
         if personalized_image_type is not None:
             request['PersonalizedImageType'] = personalized_image_type
@@ -146,7 +151,7 @@ class MobileImageMounterService(LockdownService):
         except KeyError as e:
             raise MessageNotSupportedError from e
 
-    def query_personalization_identifiers(self, image_type: str = None) -> Mapping:
+    def query_personalization_identifiers(self, image_type: Optional[str] = None) -> dict:
         request = {'Command': 'QueryPersonalizationIdentifiers'}
 
         if image_type is not None:
@@ -200,8 +205,8 @@ class DeveloperDiskImageMounter(MobileImageMounterService):
 class PersonalizedImageMounter(MobileImageMounterService):
     IMAGE_TYPE = 'Personalized'
 
-    def mount(self, image: Path, build_manifest: Path, trust_cache: Path,
-              info_plist: Mapping = None) -> None:
+    async def mount(self, image: Path, build_manifest: Path, trust_cache: Path,
+                    info_plist: Optional[dict] = None) -> None:
         self.raise_if_cannot_mount()
 
         image = image.read_bytes()
@@ -214,7 +219,7 @@ class PersonalizedImageMounter(MobileImageMounterService):
             manifest = self.query_personalization_manifest('DeveloperDiskImage', hashlib.sha384(image).digest())
         except MissingManifestError:
             self.service = self.lockdown.start_lockdown_service(self.service_name)
-            manifest = self.get_manifest_from_tss(plistlib.loads(build_manifest.read_bytes()))
+            manifest = await self.get_manifest_from_tss(plistlib.loads(build_manifest.read_bytes()))
 
         self.upload_image(self.IMAGE_TYPE, image, manifest)
 
@@ -227,7 +232,7 @@ class PersonalizedImageMounter(MobileImageMounterService):
     def umount(self) -> None:
         self.unmount_image('/System/Developer')
 
-    def get_manifest_from_tss(self, build_manifest: Mapping) -> bytes:
+    async def get_manifest_from_tss(self, build_manifest: dict) -> bytes:
         request = TSSRequest()
 
         personalization_identifiers = self.query_personalization_identifiers()
@@ -297,11 +302,12 @@ class PersonalizedImageMounter(MobileImageMounterService):
 
             request.update({key: tss_entry})
 
-        response = request.send_receive()
+        response = await request.send_receive()
         return response['ApImg4Ticket']
 
 
-def auto_mount_developer(lockdown: LockdownServiceProvider, xcode: str = None, version: str = None, custom_path: str = None) -> None:
+def auto_mount_developer(
+        lockdown: LockdownServiceProvider, xcode: Optional[str] = None, version: Optional[str] = None) -> None:
     """ auto-detect correct DeveloperDiskImage and mount it """
     if xcode is None:
         # avoid "default"-ing this option, because Windows and Linux won't have this path
@@ -354,7 +360,7 @@ def auto_mount_developer(lockdown: LockdownServiceProvider, xcode: str = None, v
     image_mounter.mount(image_path, signature)
 
 
-def auto_mount_personalized(lockdown: LockdownServiceProvider) -> None:
+async def auto_mount_personalized(lockdown: LockdownServiceProvider) -> None:
     local_path = get_home_folder() / 'Xcode_iOS_DDI_Personalized'
     local_path.mkdir(parents=True, exist_ok=True)
 
@@ -362,7 +368,8 @@ def auto_mount_personalized(lockdown: LockdownServiceProvider) -> None:
     build_manifest = local_path / 'BuildManifest.plist'
     trustcache = local_path / 'Image.trustcache'
 
-    if not image.exists():
+    if (not build_manifest.exists() or
+            plistlib.loads(build_manifest.read_bytes()).get('ProductBuildVersion') != LATEST_DDI_BUILD_ID):
         # download the Personalized image from our repository
         repo = DeveloperDiskImageRepository.create()
         personalized_image = repo.get_personalized_disk_image()
@@ -370,8 +377,12 @@ def auto_mount_personalized(lockdown: LockdownServiceProvider) -> None:
         image.write_bytes(personalized_image.image)
         build_manifest.write_bytes(personalized_image.build_manifest)
         trustcache.write_bytes(personalized_image.trustcache)
+        downloaded_ddi_build_id = plistlib.loads(personalized_image.build_manifest).get('ProductBuildVersion')
+        if downloaded_ddi_build_id != LATEST_DDI_BUILD_ID:
+            logger.warning('Downloaded personalized image has unexpected ProductBuildVersion '
+                           f'{downloaded_ddi_build_id}. Please update pymobiledevice3!')
 
-    PersonalizedImageMounter(lockdown=lockdown).mount(image, build_manifest, trustcache)
+    await PersonalizedImageMounter(lockdown=lockdown).mount(image, build_manifest, trustcache)
 
 
 def auto_mount(lockdown: LockdownServiceProvider, xcode: str = None, version: str = None, custom_path: str = None) -> None:

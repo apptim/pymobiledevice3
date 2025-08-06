@@ -1,5 +1,3 @@
-from typing import List, Mapping
-
 from pymobiledevice3.remote.core_device.core_device_service import CoreDeviceService
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 
@@ -14,28 +12,28 @@ class DeviceInfoService(CoreDeviceService):
     def __init__(self, rsd: RemoteServiceDiscoveryService):
         super().__init__(rsd, self.SERVICE_NAME)
 
-    def get_device_info(self) -> Mapping:
+    async def get_device_info(self) -> dict:
         """
         Get device information
         """
-        return self.invoke('com.apple.coredevice.feature.getdeviceinfo', {})
+        return await self.invoke('com.apple.coredevice.feature.getdeviceinfo', {})
 
-    def get_display_info(self) -> Mapping:
+    async def get_display_info(self) -> dict:
         """
         Get display information
         """
-        return self.invoke('com.apple.coredevice.feature.getdisplayinfo', {})
+        return await self.invoke('com.apple.coredevice.feature.getdisplayinfo', {})
 
-    def query_mobilegestalt(self, keys: List[str]) -> Mapping:
+    async def query_mobilegestalt(self, keys: list[str]) -> dict:
         """
         Query MobileGestalt.
 
         Can only be performed to specific devices
         """
-        return self.invoke('com.apple.coredevice.feature.querymobilegestalt', {'keys': keys})
+        return await self.invoke('com.apple.coredevice.feature.querymobilegestalt', {'keys': keys})
 
-    def get_lockstate(self) -> Mapping:
+    async def get_lockstate(self) -> dict:
         """
         Get lockstate
         """
-        return self.invoke('com.apple.coredevice.feature.getlockstate', {})
+        return await self.invoke('com.apple.coredevice.feature.getlockstate', {})

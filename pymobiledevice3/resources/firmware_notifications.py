@@ -1,14 +1,11 @@
 import logging
 import os
 import plistlib
-from typing import List
 
 import click
 import coloredlogs
 
 NOTIFICATIONS_FILENAME = os.path.join(os.path.dirname(__file__), 'notifications.txt')
-
-coloredlogs.install(level=logging.DEBUG)
 
 
 def get_notifications():
@@ -16,7 +13,7 @@ def get_notifications():
         return f.read().decode().split('\n')
 
 
-def save_notifications(notifications: List[str]):
+def save_notifications(notifications: list[str]):
     with open(NOTIFICATIONS_FILENAME, 'wb') as f:
         notifications.sort()
         f.write('\n'.join(notifications).encode())
@@ -38,8 +35,12 @@ def main(root_fs):
             continue
 
         filename = os.path.join(launch_daemons, filename)
-        with open(filename, 'rb') as f:
-            plist = plistlib.load(f)
+        try:
+            with open(filename, 'rb') as f:
+                plist = plistlib.load(f)
+        except Exception:
+            logging.exception(f'error parsing: {filename}')
+            continue
 
         launch_events = plist.get('LaunchEvents', {})
         notifyd_matching = launch_events.get('com.apple.notifyd.matching', {})
@@ -60,4 +61,5 @@ def main(root_fs):
 
 
 if __name__ == '__main__':
+    coloredlogs.install(level=logging.DEBUG)
     main()

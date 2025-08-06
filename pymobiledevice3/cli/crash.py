@@ -2,18 +2,18 @@ import click
 
 from pymobiledevice3.cli.cli_common import Command
 from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.services.crash_reports import CrashReportsManager, CrashReportsShell
 
 
 @click.group()
-def cli():
-    """ crash cli """
+def cli() -> None:
     pass
 
 
 @cli.group()
-def crash():
-    """ crash report options """
+def crash() -> None:
+    """ Manage crash reports """
     pass
 
 
@@ -31,11 +31,12 @@ def crash_clear(service_provider: LockdownClient, flush):
 @click.argument('out', type=click.Path(file_okay=False))
 @click.argument('remote_file', type=click.Path(), required=False)
 @click.option('-e', '--erase', is_flag=True)
-def crash_pull(service_provider: LockdownClient, out, remote_file, erase):
+@click.option('-m', '--match', help='Match given regex over enumerated basenames')
+def crash_pull(service_provider: LockdownServiceProvider, out, remote_file, erase, match) -> None:
     """ pull all crash reports """
     if remote_file is None:
         remote_file = '/'
-    CrashReportsManager(service_provider).pull(out, remote_file, erase)
+    CrashReportsManager(service_provider).pull(out, remote_file, erase, match)
 
 
 @crash.command('shell', cls=Command)
@@ -71,9 +72,11 @@ def crash_mover_watch(service_provider: LockdownClient, name, raw):
 
 
 @crash.command('sysdiagnose', cls=Command)
-@click.argument('out', type=click.Path(exists=False, dir_okay=False, file_okay=True))
+@click.argument('out', type=click.Path(exists=False, dir_okay=True, file_okay=True))
 @click.option('-e', '--erase', is_flag=True, help='erase file after pulling')
-def crash_sysdiagnose(service_provider: LockdownClient, out, erase):
+@click.option('-t', '--timeout', default=None, show_default=True, type=click.FLOAT,
+              help='Maximum time in seconds to wait for the completion of sysdiagnose archive')
+def crash_sysdiagnose(service_provider: LockdownClient, out, erase, timeout):
     """ get a sysdiagnose archive from device (requires user interaction) """
     print('Press Power+VolUp+VolDown for 0.215 seconds')
-    CrashReportsManager(service_provider).get_new_sysdiagnose(out, erase=erase)
+    CrashReportsManager(service_provider).get_new_sysdiagnose(out, erase=erase, timeout=timeout)

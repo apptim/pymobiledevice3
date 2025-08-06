@@ -11,14 +11,13 @@ logger = logging.getLogger(__name__)
 
 
 @click.group()
-def cli():
-    """ privision cli """
+def cli() -> None:
     pass
 
 
 @cli.group()
-def provision():
-    """ privision options """
+def provision() -> None:
+    """ Manage installed provision profiles """
     pass
 
 

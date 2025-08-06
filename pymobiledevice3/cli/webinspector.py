@@ -2,9 +2,10 @@ import asyncio
 import logging
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from functools import update_wrapper
-from typing import Iterable, List, Optional, Type
+from typing import Optional
 
 import click
 import inquirer3
@@ -21,15 +22,17 @@ from prompt_toolkit.styles import style_from_pygments_cls
 from pygments import formatters, highlight, lexers
 from pygments.styles import get_style_by_name
 
-from pymobiledevice3.cli.cli_common import Command, wait_return
+from pymobiledevice3.cli.cli_common import Command
 from pymobiledevice3.common import get_home_folder
 from pymobiledevice3.exceptions import InspectorEvaluateError, LaunchingApplicationError, \
     RemoteAutomationNotEnabledError, WebInspectorNotEnabledError, WirError
 from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
+from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
+from pymobiledevice3.osu.os_utils import get_os_utils
 from pymobiledevice3.services.web_protocol.cdp_server import app
 from pymobiledevice3.services.web_protocol.driver import By, Cookie, WebDriver
 from pymobiledevice3.services.web_protocol.inspector_session import InspectorSession
-from pymobiledevice3.services.webinspector import SAFARI, Page, WebinspectorService
+from pymobiledevice3.services.webinspector import SAFARI, ApplicationPage, WebinspectorService
 
 SCRIPT = '''
 function inspectedPage_evalResult_getCompletions(primitiveType) {{
@@ -59,18 +62,18 @@ JS_RESERVED_WORDS = ['abstract', 'arguments', 'await', 'boolean', 'break', 'byte
                      'switch', 'synchronized', 'this', 'throw', 'throws', 'transient', 'true', 'try', 'typeof', 'var',
                      'void', 'volatile', 'while', 'with', 'yield', ]
 
+OSUTILS = get_os_utils()
 logger = logging.getLogger(__name__)
 
 
 @click.group()
-def cli():
-    """ webinspector cli """
+def cli() -> None:
     pass
 
 
 @cli.group()
-def webinspector():
-    """ webinspector options """
+def webinspector() -> None:
+    """ Access webinspector services """
     pass
 
 
@@ -102,7 +105,6 @@ def create_webinspector_and_launch_app(lockdown: LockdownClient, timeout: float,
 
 
 @webinspector.command(cls=Command)
-@click.option('-v', '--verbose', is_flag=True)
 @click.option('-t', '--timeout', default=3, show_default=True, type=float)
 @catch_errors
 def opened_tabs(service_provider: LockdownClient, verbose, timeout):
@@ -111,25 +113,15 @@ def opened_tabs(service_provider: LockdownClient, verbose, timeout):
 
     \b
     Opt-in:
-        Settings -> Safari -> Advanced -> Web Inspector
+       iOS >= 18: Settings -> Apps -> Safari -> Advanced -> Web Inspector
+
+       iOS < 18: Settings -> Safari -> Advanced -> Web Inspector
     """
-    inspector = WebinspectorService(lockdown=service_provider, loop=asyncio.get_event_loop())
+    inspector = WebinspectorService(lockdown=service_provider)
     inspector.connect(timeout)
-    while not inspector.connected_application:
-        inspector.flush_input()
-    reload_pages(inspector)
-    for app_id, app_ in inspector.connected_application.items():
-        if app_id not in inspector.application_pages:
-            continue
-        if verbose:
-            print(f'{app_.name}    id: {app_id}')
-        else:
-            print(app_.name)
-        for page_id, page in inspector.application_pages[app_id].items():
-            if verbose:
-                print(f' - {page.web_url}    id: {page_id}')
-            else:
-                print(f' - {page.web_url}')
+    application_pages = inspector.get_open_application_pages(timeout=timeout)
+    for application_page in application_pages:
+        print(application_page)
     inspector.close()
 
 
@@ -142,9 +134,14 @@ def launch(service_provider: LockdownClient, url, timeout):
     Launch a specific URL in Safari.
 
     \b
-    Opt-in:
+    Opt-in (iOS >= 18):
+        Settings -> Apps -> Safari -> Advanced -> Web Inspector
+        Settings -> Apps -> Safari -> Advanced -> Remote Automation
+
+    Opt-in (iOS < 18):
         Settings -> Safari -> Advanced -> Web Inspector
         Settings -> Safari -> Advanced -> Remote Automation
+
     """
     inspector, safari = create_webinspector_and_launch_app(service_provider, timeout, SAFARI)
     session = inspector.automation_session(safari)
@@ -153,7 +150,7 @@ def launch(service_provider: LockdownClient, url, timeout):
     driver.start_session()
     print('Getting URL')
     driver.get(url)
-    wait_return()
+    OSUTILS.wait_return()
     session.stop_session()
     inspector.close()
 
@@ -187,7 +184,11 @@ def shell(service_provider: LockdownClient, timeout):
     Create an IPython shell for interacting with a WebView.
 
     \b
-    Opt-in:
+    Opt-in (iOS >= 18):
+        Settings -> Apps -> Safari -> Advanced -> Web Inspector
+        Settings -> Apps -> Safari -> Advanced -> Remote Automation
+
+    Opt-in (iOS < 18):
         Settings -> Safari -> Advanced -> Web Inspector
         Settings -> Safari -> Advanced -> Remote Automation
     """
@@ -196,7 +197,7 @@ def shell(service_provider: LockdownClient, timeout):
     driver = WebDriver(session)
     try:
         IPython.embed(
-            header=highlight(SHELL_USAGE, lexers.PythonLexer(), formatters.TerminalTrueColorFormatter(style='native')),
+            header=highlight(SHELL_USAGE, lexers.PythonLexer(), formatters.Terminal256Formatter(style='native')),
             user_ns={
                 'driver': driver,
                 'Cookie': Cookie,
@@ -210,24 +211,27 @@ def shell(service_provider: LockdownClient, timeout):
 @webinspector.command(cls=Command)
 @click.option('-t', '--timeout', default=3, show_default=True, type=float)
 @click.option('--automation', is_flag=True, help='Use remote automation')
+@click.option('--no-open-safari', is_flag=True, help='Avoid opening the Safari app')
 @click.argument('url', required=False, default='')
 @catch_errors
-def js_shell(service_provider: LockdownClient, timeout, automation, url):
+def js_shell(service_provider: LockdownServiceProvider, timeout: float, automation: bool, no_open_safari: bool,
+             url: str) -> None:
     """
     Create a javascript shell. This interpreter runs on your local machine,
     but evaluates each expression on the remote
 
     \b
     Opt-in:
-        Settings -> Safari -> Advanced -> Web Inspector
-
+        iOS >= 18: Settings -> Apps -> Safari -> Advanced -> Web Inspector
+        iOS < 18: Settings -> Safari -> Advanced -> Web Inspector
     \b
     for automation also enable:
-        Settings -> Safari -> Advanced -> Remote Automation
+        iOS >= 18: Settings -> Apps -> Safari -> Advanced -> Remote Automation
+        iOS < 18: Settings -> Safari -> Advanced -> Remote Automation
     """
 
     js_shell_class = AutomationJsShell if automation else InspectorJsShell
-    asyncio.run(run_js_shell(js_shell_class, service_provider, timeout, url))
+    asyncio.run(run_js_shell(js_shell_class, service_provider, timeout, url, not no_open_safari))
 
 
 udid = ''
@@ -256,7 +260,7 @@ def cdp(service_provider: LockdownClient, host, port):
                 ws_ping_timeout=None, ws='wsproto', loop='asyncio')
 
 
-def get_js_completions(jsshell: 'JsShell', obj: str, prefix: str) -> List[Completion]:
+def get_js_completions(jsshell: 'JsShell', obj: str, prefix: str) -> list[Completion]:
     if obj in JS_RESERVED_WORDS:
         return []
 
@@ -295,7 +299,7 @@ class JsShellCompleter(Completer):
 
 
 class JsShell(ABC):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.prompt_session = PromptSession(lexer=PygmentsLexer(lexers.JavascriptLexer),
                                             auto_suggest=AutoSuggestFromHistory(),
@@ -305,7 +309,7 @@ class JsShell(ABC):
 
     @classmethod
     @abstractmethod
-    def create(cls, lockdown: LockdownClient, timeout: float, app: str):
+    def create(cls, lockdown: LockdownServiceProvider, timeout: float, open_safari: bool) -> None:
         pass
 
     @abstractmethod
@@ -325,7 +329,7 @@ class JsShell(ABC):
 
         result = await self.evaluate_expression(exp)
         colorful_result = highlight(f'{result}', lexers.JavascriptLexer(),
-                                    formatters.TerminalTrueColorFormatter(style='stata-dark'))
+                                    formatters.Terminal256Formatter(style='stata-dark'))
         print(colorful_result, end='')
 
     async def start(self, url: str = ''):
@@ -355,8 +359,8 @@ class AutomationJsShell(JsShell):
 
     @classmethod
     @asynccontextmanager
-    async def create(cls, lockdown: LockdownClient, timeout: float, app: str) -> 'AutomationJsShell':
-        inspector, application = create_webinspector_and_launch_app(lockdown, timeout, app)
+    async def create(cls, lockdown: LockdownClient, timeout: float, open_safari: bool) -> 'AutomationJsShell':
+        inspector, application = create_webinspector_and_launch_app(lockdown, timeout, SAFARI)
         automation_session = inspector.automation_session(application)
         driver = WebDriver(automation_session)
         driver.start_session()
@@ -380,13 +384,16 @@ class InspectorJsShell(JsShell):
 
     @classmethod
     @asynccontextmanager
-    async def create(cls, lockdown: LockdownClient, timeout: float, app: str) -> 'InspectorJsShell':
-        inspector, application = create_webinspector_and_launch_app(lockdown, timeout, app)
-        page = InspectorJsShell.query_page(inspector)
-        if page is None:
+    async def create(cls, lockdown: LockdownClient, timeout: float, open_safari: bool) -> 'InspectorJsShell':
+        inspector = WebinspectorService(lockdown=lockdown)
+        inspector.connect(timeout)
+        if open_safari:
+            _ = inspector.open_app(SAFARI)
+        application_page = cls.query_page(inspector, bundle_identifier=SAFARI if open_safari else None)
+        if application_page is None:
             raise click.exceptions.Exit()
 
-        inspector_session = await inspector.inspector_session(application, page)
+        inspector_session = await inspector.inspector_session(application_page.application, application_page.page)
         await inspector_session.console_enable()
         await inspector_session.runtime_enable()
 
@@ -402,19 +409,22 @@ class InspectorJsShell(JsShell):
         await self.inspector_session.navigate_to_url(url)
 
     @staticmethod
-    def query_page(inspector: WebinspectorService) -> Optional[Page]:
-        reload_pages(inspector)
-        available_pages = list(inspector.get_open_pages().get('Safari', []))
+    def query_page(inspector: WebinspectorService, bundle_identifier: Optional[str] = None) \
+            -> Optional[ApplicationPage]:
+        available_pages = inspector.get_open_application_pages(timeout=1)
+        if bundle_identifier is not None:
+            available_pages = [application_page for application_page in available_pages if
+                               application_page.application.bundle == bundle_identifier]
         if not available_pages:
             logger.error('Unable to find available pages (try to unlock device)')
-            return
+            return None
 
         page_query = [inquirer3.List('page', message='choose page', choices=available_pages, carousel=True)]
         page = inquirer3.prompt(page_query, theme=GreenPassion(), raise_keyboard_interrupt=True)['page']
         return page
 
 
-async def run_js_shell(js_shell_class: Type[JsShell], lockdown: LockdownClient,
-                       timeout: float, url: str):
-    async with js_shell_class.create(lockdown, timeout, SAFARI) as js_shell_instance:
+async def run_js_shell(js_shell_class: type[JsShell], lockdown: LockdownServiceProvider,
+                       timeout: float, url: str, open_safari: bool) -> None:
+    async with js_shell_class.create(lockdown, timeout, open_safari) as js_shell_instance:
         await js_shell_instance.start(url)

@@ -7,14 +7,13 @@ from pymobiledevice3.services.afc import AfcService, AfcShell
 
 
 @click.group()
-def cli():
-    """ apps cli """
+def cli() -> None:
     pass
 
 
 @cli.group()
-def afc():
-    """ FileSystem utils """
+def afc() -> None:
+    """ Manage device multimedia files """
     pass
 
 
@@ -25,11 +24,12 @@ def afc_shell(service_provider: LockdownClient):
 
 
 @afc.command('pull', cls=Command)
+@click.option('-i', '--ignore-errors', is_flag=True, help='Ignore AFC pull errors')
 @click.argument('remote_file', type=click.Path(exists=False))
 @click.argument('local_file', type=click.Path(exists=False))
-def afc_pull(service_provider: LockdownServiceProvider, remote_file: str, local_file: str) -> None:
+def afc_pull(service_provider: LockdownServiceProvider, remote_file: str, local_file: str, ignore_errors: bool) -> None:
     """ pull remote file from /var/mobile/Media """
-    AfcService(lockdown=service_provider).pull(remote_file, local_file)
+    AfcService(lockdown=service_provider).pull(remote_file, local_file, ignore_errors=ignore_errors)
 
 
 @afc.command('push', cls=Command)

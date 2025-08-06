@@ -10,15 +10,20 @@ logger = logging.getLogger(__name__)
 
 
 @click.group()
-def cli():
-    """ amfi cli """
+def cli() -> None:
     pass
 
 
 @cli.group()
-def amfi():
-    """ amfi options """
+def amfi() -> None:
+    """ Enable developer-mode or query its state """
     pass
+
+
+@amfi.command(cls=Command)
+def reveal_developer_mode(service_provider: LockdownClient):
+    """ reveal developer mode option in device's UI """
+    AmfiService(service_provider).reveal_developer_mode_option_in_ui()
 
 
 @amfi.command(cls=Command)

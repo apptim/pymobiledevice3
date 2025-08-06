@@ -3,13 +3,21 @@ import socket
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple
 
 from pymobiledevice3.exceptions import FeatureNotSupportedError, OSNotSupportedError
 
 DEFAULT_AFTER_IDLE_SEC = 3
 DEFAULT_INTERVAL_SEC = 3
 DEFAULT_MAX_FAILS = 3
+
+
+def is_wsl() -> bool:
+    try:
+        with open('/proc/version', 'r') as f:
+            version_info = f.read()
+            return 'Microsoft' in version_info or 'WSL' in version_info
+    except FileNotFoundError:
+        return False
 
 
 class OsUtils:
@@ -27,8 +35,8 @@ class OsUtils:
                 from pymobiledevice3.osu.posix_util import Darwin
                 cls._instance = Darwin()
             elif cls._os_name == 'linux':
-                from pymobiledevice3.osu.posix_util import Linux
-                cls._instance = Linux()
+                from pymobiledevice3.osu.posix_util import Linux, Wsl
+                cls._instance = Wsl() if is_wsl() else Linux()
             elif cls._os_name == 'cygwin':
                 from pymobiledevice3.osu.posix_util import Cygwin
                 cls._instance = Cygwin()
@@ -41,7 +49,7 @@ class OsUtils:
         raise FeatureNotSupportedError(self._os_name, inspect.currentframe().f_code.co_name)
 
     @property
-    def usbmux_address(self) -> Tuple[str, int]:
+    def usbmux_address(self) -> tuple[str, int]:
         raise FeatureNotSupportedError(self._os_name, inspect.currentframe().f_code.co_name)
 
     @property
@@ -60,7 +68,7 @@ class OsUtils:
     def pair_record_path(self) -> Path:
         raise FeatureNotSupportedError(self._os_name, inspect.currentframe().f_code.co_name)
 
-    def get_ipv6_ips(self) -> List[str]:
+    def get_ipv6_ips(self) -> list[str]:
         raise FeatureNotSupportedError(self._os_name, inspect.currentframe().f_code.co_name)
 
     def set_keepalive(self, sock: socket.socket, after_idle_sec: int = DEFAULT_AFTER_IDLE_SEC,
