@@ -39,6 +39,8 @@ class Posix(OsUtils):
     def chown_to_non_sudo_if_needed(self, path: Path) -> None:
         if os.getenv('SUDO_UID') is None:
             return
+        if os.geteuid() != 0:
+            return
         os.chown(path, int(os.getenv('SUDO_UID')), int(os.getenv('SUDO_GID')))
 
     def parse_timestamp(self, time_stamp) -> datetime:
@@ -64,6 +66,10 @@ class Darwin(Posix):
         sock.setsockopt(socket.IPPROTO_TCP, _DARWIN_TCP_KEEPALIVE, after_idle_sec)
         sock.setsockopt(socket.IPPROTO_TCP, _DARWIN_TCP_KEEPINTVL, interval_sec)
         sock.setsockopt(socket.IPPROTO_TCP, _DARWIN_TCP_KEEPCNT, max_fails)
+
+    def get_homedir(self) -> Path:
+        sudo_user = os.environ.get('SUDO_USER', '')
+        return Path('~' + sudo_user).expanduser()
 
 
 class Linux(Posix):
