@@ -122,20 +122,10 @@ def get_preferred_pair_record(identifier: str, pairing_records_cache_folder: Pat
 
 
 def create_pairing_records_cache_folder(pairing_records_cache_folder: Path = None) -> Path:
-    """
-    Create the pairing records cache folder if it does not exist.
-
-    :param pairing_records_cache_folder: The path to the local pairing records cache folder.
-                                         If None, the home folder is used.
-    :type pairing_records_cache_folder: Path, optional
-    :return: The path to the pairing records cache folder.
-    :rtype: Path
-    """
     if pairing_records_cache_folder is None:
         pairing_records_cache_folder = get_home_folder()
     else:
         pairing_records_cache_folder.mkdir(parents=True, exist_ok=True)
-    OSUTILS.chown_to_non_sudo_if_needed(pairing_records_cache_folder)
     return pairing_records_cache_folder
 
 

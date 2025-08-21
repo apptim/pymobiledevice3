@@ -11,6 +11,10 @@ import plistlib
 import ssl
 import struct
 import sys
+if sys.platform != 'win32':
+    from os import chown
+
+from os import getenv
 from abc import ABC, abstractmethod
 from asyncio import CancelledError, StreamReader, StreamWriter
 from collections import namedtuple
@@ -495,7 +499,8 @@ class RemotePairingProtocol(StartTcpTunnel):
                 'private_key': self.ed25519_private_key.private_bytes_raw(),
                 'remote_unlock_host_key': self.remote_unlock_host_key
             }))
-        OSUTIL.chown_to_non_sudo_if_needed(self.pair_record_path)
+        if getenv('SUDO_UID') and sys.platform != 'win32':
+            chown(self.pair_record_path, int(getenv('SUDO_UID')), int(getenv('SUDO_GID')))
 
     @property
     def pair_record(self) -> Optional[dict]:
