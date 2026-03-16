@@ -1,11 +1,13 @@
+import asyncio
 import dataclasses
+import logging
 import typing
-from typing import Optional
+from typing import Any, Optional
 
+from pymobiledevice3.dtx import ConnectionAwareQueue, DTXService, PInt32, dtx_method, dtx_on_invoke
+from pymobiledevice3.dtx_service import DtxService
 from pymobiledevice3.exceptions import DisableMemoryLimitError, DvtException, DeviceLockedError
 from pymobiledevice3.osu.os_utils import get_os_utils
-from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
-from pymobiledevice3.services.remote_server import MessageAux
 
 OSUTIL = get_os_utils()
 
@@ -17,52 +19,103 @@ class OutputReceivedEvent:
     message: str
 
     @classmethod
-    def create(cls, message) -> 'OutputReceivedEvent':
+    def create(cls, message: list[Any]) -> "OutputReceivedEvent":
+        def _value(v: Any) -> Any:
+            return getattr(v, "value", v)
+
+        msg_value = _value(message[0])
+        pid_value = _value(message[1])
+        timestamp_value = _value(message[2])
         try:
-            date = OSUTIL.parse_timestamp(message[2].value)
+            date = OSUTIL.parse_timestamp(timestamp_value)
         except (ValueError, OSError):
             date = None
 
-        return cls(pid=message[1].value, date=date, message=message[0].value)
+        return cls(pid=pid_value, date=date, message=msg_value)
 
 
-class ProcessControl:
-    IDENTIFIER = 'com.apple.instruments.server.services.processcontrol'
+class ProcessControlService(DTXService):
+    IDENTIFIER = "com.apple.instruments.server.services.processcontrol"
 
-    def __init__(self, dvt: DvtSecureSocketProxyService):
-        self._channel = dvt.make_channel(self.IDENTIFIER)
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self.output_events: asyncio.Queue[list[Any]] = ConnectionAwareQueue()
 
-    def signal(self, pid: int, sig: int):
+    @dtx_method("sendSignal:toPid:")
+    async def send_signal_to_pid_(self, sig: int, pid: int) -> Any: ...
+
+    @dtx_method("requestDisableMemoryLimitsForPid:")
+    async def request_disable_memory_limits_for_pid_(self, pid: PInt32) -> bool: ...
+
+    @dtx_method("killPid:", expects_reply=False)
+    async def kill_pid_(self, pid: int) -> None: ...
+
+    @dtx_method("processIdentifierForBundleIdentifier:")
+    async def process_identifier_for_bundle_identifier_(self, app_bundle_identifier: str) -> int: ...
+
+    @dtx_method("launchSuspendedProcessWithDevicePath:bundleIdentifier:environment:arguments:options:")
+    async def launch_suspended_process_with_device_path_bundle_identifier_environment_arguments_options_(
+        self, device_path: str, bundle_id: str, environment: dict, arguments: list, options: dict
+    ) -> int: ...
+
+    @dtx_on_invoke("outputReceived:fromProcess:atTime:")
+    async def _on_output_received(self, message: str, pid: int, timestamp: Any) -> None:
+        await self.output_events.put([message, pid, timestamp])
+
+    @dtx_method
+    async def startObservingPid_(self, pid: int) -> None: ...
+
+    @dtx_method
+    async def stopObservingPid_(self, pid: int) -> None: ...
+
+    @dtx_on_invoke("processWithPID:terminatedWithExitCode:orCrashingSignal:")
+    async def _on_process_terminated(self, pid: int, exit_code: Optional[int], crashing_signal: Optional[int]) -> None:
+        logger = self._ctx.get("logger") or logging.getLogger(__name__)
+        logger.warning(
+            f"Process with PID {pid} terminated with exit code {exit_code} or crashing signal {crashing_signal}"
+        )
+
+
+class ProcessControl(DtxService[ProcessControlService]):
+    async def connect(self):
+        await super().connect()
+        self._provider.dtx.ctx["logger"] = self.logger.getChild("dtx")
+
+    async def signal(self, pid: int, sig: int):
         """
         Send signal to process
         :param pid: PID of process to send signal.
         :param sig: SIGNAL to send
         """
-        self._channel.sendSignal_toPid_(MessageAux().append_obj(sig).append_obj(pid), expects_reply=True)
-        return self._channel.receive_plist()
+        return await self.service.send_signal_to_pid_(sig, pid)
 
-    def disable_memory_limit_for_pid(self, pid: int) -> None:
+    async def disable_memory_limit_for_pid(self, pid: int) -> None:
         """
         Waive memory limit for a given pid
         :param pid: process id.
         """
-        self._channel.requestDisableMemoryLimitsForPid_(MessageAux().append_int(pid), expects_reply=True)
-        if not self._channel.receive_plist():
+        if not await self.service.request_disable_memory_limits_for_pid_(pid):
             raise DisableMemoryLimitError()
 
-    def kill(self, pid: int):
+    async def kill(self, pid: int):
         """
         Kill a process.
         :param pid: PID of process to kill.
         """
-        self._channel.killPid_(MessageAux().append_obj(pid), expects_reply=False)
+        await self.service.kill_pid_(pid)
 
-    def process_identifier_for_bundle_identifier(self, app_bundle_identifier: str) -> int:
-        self._channel.processIdentifierForBundleIdentifier_(MessageAux().append_obj(app_bundle_identifier), expects_reply=True)
-        return self._channel.receive_plist()
+    async def process_identifier_for_bundle_identifier(self, app_bundle_identifier: str) -> int:
+        return await self.service.process_identifier_for_bundle_identifier_(app_bundle_identifier)
 
-    def launch(self, bundle_id: str, arguments=None, kill_existing: bool = True, start_suspended: bool = False,
-               environment: Optional[dict] = None, extra_options: Optional[dict] = None) -> int:
+    async def launch(
+        self,
+        bundle_id: str,
+        arguments=None,
+        kill_existing: bool = True,
+        start_suspended: bool = False,
+        environment: Optional[dict] = None,
+        extra_options: Optional[dict] = None,
+    ) -> int:
         """
         Launch a process.
         :param bundle_id: Bundle id of the process.
@@ -76,26 +129,22 @@ class ProcessControl:
         arguments = [] if arguments is None else arguments
         environment = {} if environment is None else environment
         options = {
-            'StartSuspendedKey': start_suspended,
-            'KillExisting': kill_existing,
+            "StartSuspendedKey": start_suspended,
+            "KillExisting": kill_existing,
         }
         if extra_options:
             options.update(extra_options)
-        args = MessageAux().append_obj('').append_obj(bundle_id).append_obj(environment).append_obj(
-            arguments).append_obj({
-                'StartSuspendedKey': start_suspended,
-                'KillExisting': kill_existing,
-            })
         try:
-            self._channel.launchSuspendedProcessWithDevicePath_bundleIdentifier_environment_arguments_options_(args)
-            result = self._channel.receive_plist()
+            result = await self.service.launch_suspended_process_with_device_path_bundle_identifier_environment_arguments_options_(
+                "", bundle_id, environment, arguments, options
+            )
         except DvtException as exc:
             error = exc.args[0]["NSLocalizedFailureReason"]
             raise DeviceLockedError() if "the device was not, or could not be, unlocked" in error else error
         assert result
         return result
 
-    def __iter__(self) -> typing.Generator[OutputReceivedEvent, None, None]:
-        key, value = self._channel.receive_key_value()
-        if key == 'outputReceived:fromProcess:atTime:':
+    async def __aiter__(self) -> typing.AsyncGenerator[OutputReceivedEvent, None]:
+        while True:
+            value = await self.service.output_events.get()
             yield OutputReceivedEvent.create(value)

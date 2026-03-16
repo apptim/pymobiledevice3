@@ -1,7 +1,7 @@
 from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.services.lockdown_service import LockdownService
 
-SRCFILES = '''Baseband
+SRCFILES = """Baseband
 CrashReporter
 MobileAsset
 VARFS
@@ -19,37 +19,37 @@ NANDDebugInfo
 SystemConfiguration
 Ubiquity
 tmp
-WirelessAutomation'''
+WirelessAutomation"""
 
 
 class FileRelayService(LockdownService):
-    SERVICE_NAME = 'com.apple.mobile.file_relay'
+    SERVICE_NAME = "com.apple.mobile.file_relay"
 
     def __init__(self, lockdown: LockdownClient):
         super().__init__(lockdown, self.SERVICE_NAME)
         self.packet_num = 0
 
-    def stop_session(self):
-        self.logger.info('Disconecting...')
-        self.service.close()
+    async def stop_session(self):
+        self.logger.info("Disconecting...")
+        await self.service.close()
 
-    def request_sources(self, sources=None):
+    async def request_sources(self, sources=None):
         if sources is None:
-            sources = ['UserDatabases']
-        self.service.send_plist({'Sources': sources})
+            sources = ["UserDatabases"]
+        await self.service.send_plist({"Sources": sources})
         while 1:
-            res = self.service.recv_plist()
+            res = await self.service.recv_plist()
             if res:
-                s = res.get('Status')
-                if s == 'Acknowledged':
-                    z = ''
+                s = res.get("Status")
+                if s == "Acknowledged":
+                    z = b""
                     while True:
-                        x = self.service.recv()
+                        x = self.service.recv_sync()
                         if not x:
                             break
                         z += x
                     return z
                 else:
-                    print(res.get('Error'))
+                    print(res.get("Error"))
                     break
         return None

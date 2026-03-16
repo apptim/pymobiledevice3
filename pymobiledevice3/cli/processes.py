@@ -1,37 +1,33 @@
 import logging
 
-import click
+from typer_injector import InjectingTyper
 
-from pymobiledevice3.cli.cli_common import Command, print_json
-from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.cli.cli_common import ServiceProviderDep, async_command, print_json
 from pymobiledevice3.services.os_trace import OsTraceService
 
 logger = logging.getLogger(__name__)
 
 
-@click.group()
-def cli() -> None:
-    pass
+cli = InjectingTyper(
+    name="processes",
+    help="View process list using diagnosticsd API",
+    no_args_is_help=True,
+)
 
 
-@cli.group()
-def processes() -> None:
-    """ View process list using diagnosticsd API """
-    pass
+@cli.command("ps")
+@async_command
+async def processes_ps(service_provider: ServiceProviderDep) -> None:
+    """show process list"""
+    print_json((await OsTraceService(lockdown=service_provider).get_pid_list()).get("Payload"))
 
 
-@processes.command('ps', cls=Command)
-def processes_ps(service_provider: LockdownClient):
-    """ show process list """
-    print_json(OsTraceService(lockdown=service_provider).get_pid_list().get('Payload'))
-
-
-@processes.command('pgrep', cls=Command)
-@click.argument('expression')
-def processes_pgrep(service_provider: LockdownClient, expression):
-    """ try to match processes pid by given expression (like pgrep) """
-    processes_list = OsTraceService(lockdown=service_provider).get_pid_list().get('Payload')
+@cli.command("pgrep")
+@async_command
+async def processes_pgrep(service_provider: ServiceProviderDep, expression: str) -> None:
+    """try to match processes pid by given expression (like pgrep)"""
+    processes_list = (await OsTraceService(lockdown=service_provider).get_pid_list()).get("Payload")
     for pid, process_info in processes_list.items():
-        process_name = process_info.get('ProcessName')
+        process_name = process_info.get("ProcessName")
         if expression in process_name:
-            logger.info(f'{pid} {process_name}')
+            logger.info(f"{pid} {process_name}")

@@ -2,338 +2,362 @@ import pathlib
 from datetime import datetime
 
 import pytest
+import pytest_asyncio
 
 from pymobiledevice3.exceptions import AfcException, AfcFileNotFoundError
-from pymobiledevice3.services.afc import MAXIMUM_READ_SIZE, AfcService, afc_error_t
+from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.services.afc import MAXIMUM_READ_SIZE, AfcError, AfcService
 
-TEST_FILENAME = 'test'
-TEST_FOLDER_NAME = 'test_folder'
+TEST_FILENAME = "test"
+TEST_FOLDER_NAME = "test_folder"
+
+pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture(scope='function')
-def afc(lockdown):
-    with AfcService(lockdown) as afc:
+@pytest_asyncio.fixture(scope="function")
+async def afc(lockdown: LockdownClient):
+    async with AfcService(lockdown) as afc:
         yield afc
 
 
-def test_exists(afc: AfcService):
-    assert afc.exists('DCIM')
-    assert not afc.exists('a_directory_that_doesnt_exist')
+async def test_exists(afc: AfcService) -> None:
+    assert await afc.exists("DCIM")
+    assert not await afc.exists("a_directory_that_doesnt_exist")
 
 
-def test_exists_folder_in_a_file(afc: AfcService):
-    afc.set_file_contents(TEST_FILENAME, b'data')
+async def test_exists_folder_in_a_file(afc: AfcService) -> None:
+    await afc.set_file_contents(TEST_FILENAME, b"data")
     try:
-        assert not afc.exists(f'{TEST_FILENAME}/sub_folder')
+        assert not await afc.exists(f"{TEST_FILENAME}/sub_folder")
     finally:
-        afc.rm(TEST_FILENAME)
+        await afc.rm(TEST_FILENAME)
 
 
-def test_rm(afc):
-    afc.set_file_contents(TEST_FILENAME, b'')
-    filenames = afc.listdir('/')
+async def test_rm(afc: AfcService) -> None:
+    await afc.set_file_contents(TEST_FILENAME, b"")
+    filenames = await afc.listdir("/")
     assert TEST_FILENAME in filenames
 
-    afc.rm(TEST_FILENAME)
+    await afc.rm(TEST_FILENAME)
 
-    filenames = afc.listdir('/')
+    filenames = await afc.listdir("/")
     assert TEST_FILENAME not in filenames
 
 
-def test_rm_force_missing_file(afc):
+async def test_rm_force_missing_file(afc: AfcService) -> None:
     with pytest.raises(AfcFileNotFoundError):
-        afc.rm(TEST_FILENAME)
-    afc.rm(TEST_FILENAME, force=True)
+        await afc.rm(TEST_FILENAME)
+    await afc.rm(TEST_FILENAME, force=True)
 
 
-@pytest.mark.parametrize('path', [
-    'file_that_doesnt_exist.txt',
-    'missingfolder/file_that_doesnt_exist.txt',
-    '/missingfolder/file_that_doesnt_exist.txt',
-    '/missingfolder/file_that_doesnt_exist.txt/',
-    '/missingfolder/./././file_that_doesnt_exist.txt/',
-])
-def test_rm_file_doesnt_exist(afc: AfcService, path):
+@pytest.mark.parametrize(
+    "path",
+    [
+        "file_that_doesnt_exist.txt",
+        "missingfolder/file_that_doesnt_exist.txt",
+        "/missingfolder/file_that_doesnt_exist.txt",
+        "/missingfolder/file_that_doesnt_exist.txt/",
+        "/missingfolder/./././file_that_doesnt_exist.txt/",
+    ],
+)
+async def test_rm_file_doesnt_exist(afc: AfcService, path: str) -> None:
     with pytest.raises(AfcFileNotFoundError) as e:
-        afc.rm(path)
-    assert e.value.status == afc_error_t.OBJECT_NOT_FOUND
+        await afc.rm(path)
+    assert e.value.status == AfcError.OBJECT_NOT_FOUND
 
 
-def test_get_device_info(afc: AfcService):
-    device_info = afc.get_device_info()
-    assert device_info['Model'].startswith('iPhone')
-    assert int(device_info['FSTotalBytes']) > int(device_info['FSFreeBytes'])
+async def test_get_device_info(afc: AfcService) -> None:
+    device_info = await afc.get_device_info()
+    assert device_info["Model"].startswith("iPhone")
+    assert int(device_info["FSTotalBytes"]) > int(device_info["FSFreeBytes"])
 
 
-def test_listdir(afc):
-    filenames = afc.listdir('/')
-    assert 'DCIM' in filenames
-    assert 'Downloads' in filenames
-    assert 'Books' in filenames
+async def test_listdir(afc: AfcService) -> None:
+    filenames = await afc.listdir("/")
+    assert "DCIM" in filenames
+    assert "Downloads" in filenames
+    assert "Books" in filenames
 
 
-@pytest.mark.parametrize('path', [
-    'missing_folder',
-    'missingfolder/missing_folder',
-    'missingfolder/missing_folder/',
-    '/missingfolder/missing_folder',
-    '/missingfolder/missing_folder/',
-])
-def test_listdir_folder_doesnt_exist(afc: AfcService, path):
+@pytest.mark.parametrize(
+    "path",
+    [
+        "missing_folder",
+        "missingfolder/missing_folder",
+        "missingfolder/missing_folder/",
+        "/missingfolder/missing_folder",
+        "/missingfolder/missing_folder/",
+    ],
+)
+async def test_listdir_folder_doesnt_exist(afc: AfcService, path: str) -> None:
     with pytest.raises(AfcFileNotFoundError) as e:
-        afc.listdir(path)
-    assert e.value.status == afc_error_t.OBJECT_NOT_FOUND
+        await afc.listdir(path)
+    assert e.value.status == AfcError.OBJECT_NOT_FOUND
 
 
-def test_listdir_file(afc: AfcService):
-    afc.set_file_contents(TEST_FILENAME, b'data')
+async def test_listdir_file(afc: AfcService):
+    await afc.set_file_contents(TEST_FILENAME, b"data")
     try:
         with pytest.raises(AfcException) as e:
-            afc.listdir(TEST_FILENAME)
+            await afc.listdir(TEST_FILENAME)
     finally:
-        afc.rm(TEST_FILENAME)
-    assert e.value.status == afc_error_t.READ_ERROR
+        await afc.rm(TEST_FILENAME)
+    assert e.value.status == AfcError.READ_ERROR
 
 
-@pytest.mark.parametrize('path', [
-    'test_dir_a/test_dir_b/test_dir_c/test_dir_d',
-    'test_dir_a/test_dir_b/test_dir_c/test_dir_d/',
-    '/test_dir_a/test_dir_b/test_dir_c/test_dir_d',
-    '/test_dir_a/test_dir_b/test_dir_c/test_dir_d/',
-    '/test_dir_a/./../test_dir_a/test_dir_b/../test_dir_b/test_dir_c/',
-])
-def test_makedirs_and_rm_dir(afc: AfcService, path):
-    assert not afc.exists(path)
-    afc.makedirs(path)
-    assert afc.exists(path)
-    afc.rm(pathlib.PosixPath(path.lstrip('/')).parts[0])
-    assert not afc.exists(path)
+@pytest.mark.parametrize(
+    "path",
+    [
+        "test_dir_a/test_dir_b/test_dir_c/test_dir_d",
+        "test_dir_a/test_dir_b/test_dir_c/test_dir_d/",
+        "/test_dir_a/test_dir_b/test_dir_c/test_dir_d",
+        "/test_dir_a/test_dir_b/test_dir_c/test_dir_d/",
+        "/test_dir_a/./../test_dir_a/test_dir_b/../test_dir_b/test_dir_c/",
+    ],
+)
+async def test_makedirs_and_rm_dir(afc: AfcService, path: str) -> None:
+    root_dir = pathlib.PosixPath(path.lstrip("/")).parts[0]
+    await afc.rm(root_dir, force=True)
+    try:
+        assert not await afc.exists(path)
+        await afc.makedirs(path)
+        assert await afc.exists(path)
+        await afc.rm(root_dir)
+        assert not await afc.exists(path)
+    finally:
+        await afc.rm(root_dir, force=True)
 
 
-def test_makedirs_file(afc: AfcService):
-    afc.set_file_contents(TEST_FILENAME, b'data')
-    impossible_path = f'{TEST_FILENAME}/sub_folder'
+async def test_makedirs_file(afc: AfcService):
+    await afc.set_file_contents(TEST_FILENAME, b"data")
+    impossible_path = f"{TEST_FILENAME}/sub_folder"
     try:
         with pytest.raises(AfcException) as e:
-            afc.makedirs(impossible_path)
-        assert not afc.exists(impossible_path)
+            await afc.makedirs(impossible_path)
+        assert not await afc.exists(impossible_path)
     finally:
-        afc.rm(TEST_FILENAME)
-    assert e.value.status == afc_error_t.OBJECT_EXISTS
+        await afc.rm(TEST_FILENAME)
+    assert e.value.status == AfcError.OBJECT_EXISTS
 
 
-def test_isdir_file(afc: AfcService):
-    afc.set_file_contents(TEST_FILENAME, b'data')
-    assert not afc.isdir(TEST_FILENAME)
-    afc.rm(TEST_FILENAME)
+async def test_isdir_file(afc: AfcService):
+    await afc.set_file_contents(TEST_FILENAME, b"data")
+    assert not await afc.isdir(TEST_FILENAME)
+    await afc.rm(TEST_FILENAME)
 
 
-@pytest.mark.parametrize('path', [
-    TEST_FOLDER_NAME,
-    f'{TEST_FOLDER_NAME}/',
-    f'/{TEST_FOLDER_NAME}',
-    f'/{TEST_FOLDER_NAME}/',
-    f'/{TEST_FOLDER_NAME}/./../{TEST_FOLDER_NAME}/',
-])
-def test_isdir_folder(afc: AfcService, path):
-    afc.makedirs(TEST_FILENAME)
-    assert afc.isdir(TEST_FILENAME)
-    afc.rm(TEST_FILENAME)
+@pytest.mark.parametrize(
+    "path",
+    [
+        TEST_FOLDER_NAME,
+        f"{TEST_FOLDER_NAME}/",
+        f"/{TEST_FOLDER_NAME}",
+        f"/{TEST_FOLDER_NAME}/",
+        f"/{TEST_FOLDER_NAME}/./../{TEST_FOLDER_NAME}/",
+    ],
+)
+async def test_isdir_folder(afc: AfcService, path: str) -> None:
+    await afc.makedirs(TEST_FILENAME)
+    assert await afc.isdir(TEST_FILENAME)
+    await afc.rm(TEST_FILENAME)
 
 
-def test_isdir_missing_path(afc: AfcService):
+async def test_isdir_missing_path(afc: AfcService) -> None:
     with pytest.raises(AfcFileNotFoundError):
-        afc.isdir('folder_that_doesnt_exist')
+        await afc.isdir("folder_that_doesnt_exist")
 
 
-def test_isdir_missing_path_inside_a_file(afc: AfcService):
-    afc.set_file_contents(TEST_FILENAME, b'data')
-    impossible_path = f'{TEST_FILENAME}/sub_folder'
+async def test_isdir_missing_path_inside_a_file(afc: AfcService) -> None:
+    await afc.set_file_contents(TEST_FILENAME, b"data")
+    impossible_path = f"{TEST_FILENAME}/sub_folder"
     try:
         with pytest.raises(AfcFileNotFoundError):
-            afc.isdir(impossible_path)
+            await afc.isdir(impossible_path)
     finally:
-        afc.rm(TEST_FILENAME)
+        await afc.rm(TEST_FILENAME)
 
 
-def test_stat_file(afc: AfcService):
-    data = b'data'
-    timestamp = datetime.fromtimestamp(afc.lockdown.get_value(key='TimeIntervalSince1970'))
+async def test_stat_file(afc: AfcService) -> None:
+    data = b"data"
+    timestamp = datetime.fromtimestamp(await afc.lockdown.get_value(key="TimeIntervalSince1970"))
     timestamp = timestamp.replace(microsecond=0)  # stat resolution might not include microseconds
-    afc.set_file_contents(TEST_FILENAME, data)
-    stat = afc.stat(TEST_FILENAME)
-    afc.rm(TEST_FILENAME)
-    assert stat['st_size'] == len(data)
-    assert stat['st_ifmt'] == 'S_IFREG'
-    assert stat['st_mtime'] >= timestamp
+    await afc.set_file_contents(TEST_FILENAME, data)
+    stat = await afc.stat(TEST_FILENAME)
+    await afc.rm(TEST_FILENAME)
+    assert stat["st_size"] == len(data)
+    assert stat["st_ifmt"] == "S_IFREG"
+    assert stat["st_mtime"] >= timestamp
 
 
-def test_stat_folder(afc: AfcService):
-    timestamp = datetime.fromtimestamp(afc.lockdown.get_value(key='TimeIntervalSince1970'))
+async def test_stat_folder(afc: AfcService) -> None:
+    timestamp = datetime.fromtimestamp(await afc.lockdown.get_value(key="TimeIntervalSince1970"))
     timestamp = timestamp.replace(microsecond=0)  # stat resolution might not include microseconds
-    afc.makedirs(TEST_FOLDER_NAME)
-    stat = afc.stat(TEST_FOLDER_NAME)
-    afc.rm(TEST_FOLDER_NAME)
-    assert stat['st_size'] in (64, 68)
-    assert stat['st_ifmt'] == 'S_IFDIR'
-    assert stat['st_mtime'] >= timestamp
+    await afc.makedirs(TEST_FOLDER_NAME)
+    stat = await afc.stat(TEST_FOLDER_NAME)
+    await afc.rm(TEST_FOLDER_NAME)
+    assert stat["st_size"] in (64, 68)
+    assert stat["st_ifmt"] == "S_IFDIR"
+    assert stat["st_mtime"] >= timestamp
 
 
-@pytest.mark.parametrize('path', [
-    'missing_file',
-    '/missing_file',
-    'missing_folder/',
-    '/missing_folder/',
-    'missingfolder/missing_file',
-    'missingfolder/missing_folder/',
-    '/missingfolder/missing_file',
-    '/missingfolder/missing_folder/',
-])
-def test_stat_doesnt_exist(afc: AfcService, path):
+@pytest.mark.parametrize(
+    "path",
+    [
+        "missing_file",
+        "/missing_file",
+        "missing_folder/",
+        "/missing_folder/",
+        "missingfolder/missing_file",
+        "missingfolder/missing_folder/",
+        "/missingfolder/missing_file",
+        "/missingfolder/missing_folder/",
+    ],
+)
+async def test_stat_doesnt_exist(afc: AfcService, path: str) -> None:
     with pytest.raises(AfcFileNotFoundError):
-        afc.stat(path)
+        await afc.stat(path)
 
 
-def test_stat_missing_path_inside_a_file(afc: AfcService):
-    afc.set_file_contents(TEST_FILENAME, b'data')
-    impossible_path = f'{TEST_FILENAME}/sub_folder'
+async def test_stat_missing_path_inside_a_file(afc: AfcService) -> None:
+    await afc.set_file_contents(TEST_FILENAME, b"data")
+    impossible_path = f"{TEST_FILENAME}/sub_folder"
     try:
         with pytest.raises(AfcFileNotFoundError):
-            afc.stat(impossible_path)
+            await afc.stat(impossible_path)
     finally:
-        afc.rm(TEST_FILENAME)
+        await afc.rm(TEST_FILENAME)
 
 
-def test_fopen_missing_file(afc: AfcService):
+async def test_fopen_missing_file(afc: AfcService) -> None:
     with pytest.raises(AfcFileNotFoundError):
-        afc.fopen('file_that_doesnt_exist')
+        await afc.fopen("file_that_doesnt_exist")
 
 
-def test_fclose_not_opened(afc: AfcService):
+async def test_fclose_not_opened(afc: AfcService) -> None:
     with pytest.raises(AfcException) as e:
-        afc.fclose(77)
-    assert e.value.status == afc_error_t.INVALID_ARG
+        await afc.fclose(77)
+    assert e.value.status == AfcError.INVALID_ARG
 
 
-def test_rename(afc: AfcService):
-    afc.set_file_contents('source.txt', b'data')
-    afc.rename('source.txt', 'dest.txt')
+async def test_rename(afc: AfcService):
+    await afc.set_file_contents("source.txt", b"data")
+    await afc.rename("source.txt", "dest.txt")
     try:
-        assert afc.get_file_contents('dest.txt') == b'data'
+        assert await afc.get_file_contents("dest.txt") == b"data"
     finally:
-        afc.rm('dest.txt')
+        await afc.rm("dest.txt")
     with pytest.raises(AfcFileNotFoundError):
-        afc.get_file_contents('source.txt')
+        await afc.get_file_contents("source.txt")
 
 
-def test_rename_between_folders(afc: AfcService):
-    afc.makedirs('dir_a/dir_b')
-    source = 'dir_a/dir_b/source.txt'
-    dest = 'dir_a/source.txt'
-    afc.set_file_contents(source, b'data')
-    afc.rename(source, dest)
+async def test_rename_between_folders(afc: AfcService) -> None:
+    await afc.makedirs("dir_a/dir_b")
+    source = "dir_a/dir_b/source.txt"
+    dest = "dir_a/source.txt"
+    await afc.set_file_contents(source, b"data")
+    await afc.rename(source, dest)
     try:
-        assert afc.get_file_contents(dest) == b'data'
+        assert await afc.get_file_contents(dest) == b"data"
         with pytest.raises(AfcFileNotFoundError):
-            afc.get_file_contents(source)
+            await afc.get_file_contents(source)
     finally:
-        afc.rm('dir_a')
+        await afc.rm("dir_a")
 
 
-def test_rename_missing_source(afc: AfcService):
+async def test_rename_missing_source(afc: AfcService) -> None:
     with pytest.raises(AfcFileNotFoundError):
-        afc.rename('source.txt', 'dest.txt')
+        await afc.rename("source.txt", "dest.txt")
 
 
-def test_rename_source_path_inside_a_file(afc: AfcService):
-    afc.set_file_contents(TEST_FILENAME, b'data')
-    impossible_path = f'{TEST_FILENAME}/source.txt'
+async def test_rename_source_path_inside_a_file(afc: AfcService) -> None:
+    await afc.set_file_contents(TEST_FILENAME, b"data")
+    impossible_path = f"{TEST_FILENAME}/source.txt"
     try:
         with pytest.raises(AfcFileNotFoundError):
-            afc.rename(impossible_path, 'dest.txt')
+            await afc.rename(impossible_path, "dest.txt")
     finally:
-        afc.rm(TEST_FILENAME)
+        await afc.rm(TEST_FILENAME)
 
 
-def test_rename_dest_path_inside_a_file(afc: AfcService):
-    afc.set_file_contents(TEST_FILENAME, b'data')
-    source = 'source.txt'
-    afc.set_file_contents(source, b'data')
-    impossible_path = f'{TEST_FILENAME}/dest.txt'
+async def test_rename_dest_path_inside_a_file(afc: AfcService) -> None:
+    await afc.set_file_contents(TEST_FILENAME, b"data")
+    source = "source.txt"
+    await afc.set_file_contents(source, b"data")
+    impossible_path = f"{TEST_FILENAME}/dest.txt"
     try:
         with pytest.raises(AfcException):
-            afc.rename(source, impossible_path)
+            await afc.rename(source, impossible_path)
     finally:
-        afc.rm(TEST_FILENAME)
-        afc.rm(source)
+        await afc.rm(TEST_FILENAME)
+        await afc.rm(source)
 
 
-def test_rename_to_self(afc: AfcService):
-    data = b'data'
-    afc.set_file_contents(TEST_FILENAME, data)
-    afc.rename(TEST_FILENAME, TEST_FILENAME)
-    assert afc.get_file_contents(TEST_FILENAME) == data
-    afc.rm(TEST_FILENAME)
+async def test_rename_to_self(afc: AfcService) -> None:
+    data = b"data"
+    await afc.set_file_contents(TEST_FILENAME, data)
+    await afc.rename(TEST_FILENAME, TEST_FILENAME)
+    assert await afc.get_file_contents(TEST_FILENAME) == data
+    await afc.rm(TEST_FILENAME)
 
 
-def test_fread_more_than_file_size(afc: AfcService):
-    data = b'data'
-    afc.set_file_contents(TEST_FILENAME, data)
-    h = afc.fopen(TEST_FILENAME)
-    read_data = afc.fread(h, len(data) + 2)
-    afc.fclose(h)
-    afc.rm(TEST_FILENAME)
+async def test_fread_more_than_file_size(afc: AfcService) -> None:
+    data = b"data"
+    await afc.set_file_contents(TEST_FILENAME, data)
+    h = await afc.fopen(TEST_FILENAME)
+    read_data = await afc.fread(h, len(data) + 2)
+    await afc.fclose(h)
+    await afc.rm(TEST_FILENAME)
     assert read_data == data
 
 
-def test_fread_not_opened(afc: AfcService):
+async def test_fread_not_opened(afc: AfcService) -> None:
     with pytest.raises(AfcException) as e:
-        afc.fread(77, 4)
-    assert e.value.status == afc_error_t.INVALID_ARG
+        await afc.fread(77, 4)
+    assert e.value.status == AfcError.INVALID_ARG
 
 
-def test_fwrite_not_opened(afc: AfcService):
+async def test_fwrite_not_opened(afc: AfcService) -> None:
     with pytest.raises(AfcException) as e:
-        afc.fwrite(77, b'asdasd')
-    assert e.value.status == afc_error_t.INVALID_ARG
+        await afc.fwrite(77, b"asdasd")
+    assert e.value.status == AfcError.INVALID_ARG
 
 
-def test_file_read_write(afc: AfcService):
-    body = b'data'
+async def test_file_read_write(afc: AfcService) -> None:
+    body = b"data"
 
-    afc.set_file_contents(TEST_FILENAME, body)
+    await afc.set_file_contents(TEST_FILENAME, body)
     try:
-        assert afc.get_file_contents(TEST_FILENAME) == body
+        assert await afc.get_file_contents(TEST_FILENAME) == body
     finally:
-        afc.rm(TEST_FILENAME)
+        await afc.rm(TEST_FILENAME)
 
 
-def test_get_file_contents_missing_file(afc: AfcService):
+async def test_get_file_contents_missing_file(afc: AfcService) -> None:
     with pytest.raises(AfcFileNotFoundError):
-        afc.get_file_contents('missing_file')
+        await afc.get_file_contents("missing_file")
 
 
-def test_dirlist(afc: AfcService):
-    afc.makedirs('test_a/test_b/test_c/test_d')
+async def test_dirlist(afc: AfcService):
+    await afc.makedirs("test_a/test_b/test_c/test_d")
     try:
-        assert list(afc.dirlist('/', 0)) == ['/']
-        dirlist = list(afc.dirlist('/', 2))
-        assert '/' in dirlist
-        assert '/test_a' in dirlist
-        assert '/test_a/test_b' in dirlist
-        assert '/test_a/test_b/test_c' not in dirlist
-        assert list(afc.dirlist('test_a', 0)) == ['test_a']
-        dirlist = list(afc.dirlist('test_a', 2))
-        assert 'test_a' in dirlist
-        assert 'test_a/test_b' in dirlist
-        assert 'test_a/test_b/test_c' in dirlist
-        assert 'test_a/test_b/test_c/test_d' not in dirlist
+        assert [x async for x in afc.dirlist("/", 0)] == ["/"]
+        dirlist = [x async for x in afc.dirlist("/", 2)]
+        assert "/" in dirlist
+        assert "/test_a" in dirlist
+        assert "/test_a/test_b" in dirlist
+        assert "/test_a/test_b/test_c" not in dirlist
+        assert [x async for x in afc.dirlist("test_a", 0)] == ["test_a"]
+        dirlist = [x async for x in afc.dirlist("test_a", 2)]
+        assert "test_a" in dirlist
+        assert "test_a/test_b" in dirlist
+        assert "test_a/test_b/test_c" in dirlist
+        assert "test_a/test_b/test_c/test_d" not in dirlist
     finally:
-        afc.rm('test_a')
+        await afc.rm("test_a")
 
 
-def test_push_pull_bigger_than_max_chunk(afc: AfcService):
-    contents = b'x' * MAXIMUM_READ_SIZE * 2
-    afc.set_file_contents('test', contents)
-    assert contents == afc.get_file_contents('test')
-    afc.rm('test')
+async def test_push_pull_bigger_than_max_chunk(afc: AfcService) -> None:
+    contents = b"x" * MAXIMUM_READ_SIZE * 2
+    await afc.set_file_contents("test", contents)
+    assert contents == await afc.get_file_contents("test")
+    await afc.rm("test")

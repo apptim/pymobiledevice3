@@ -1,82 +1,85 @@
-import glob
 import shutil
-import time
+from contextlib import suppress
+from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
-from pymobiledevice3.lockdown import create_using_usbmux
+from pymobiledevice3.exceptions import AfcFileNotFoundError
+from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.services.crash_reports import CrashReportsManager
 
-BASENAME = '__pymobiledevice3_tests'
-PATH_COMPONENT = f'/{BASENAME}'
+BASENAME = "__pymobiledevice3_tests"
+PATH_COMPONENT = f"/{BASENAME}"
 
 
-@pytest.fixture(scope='function')
-def crash_manager(lockdown):
-    with CrashReportsManager(lockdown) as crash_manager:
+@pytest_asyncio.fixture(scope="function")
+async def crash_manager(lockdown: LockdownClient):
+    async with CrashReportsManager(lockdown) as crash_manager:
         yield crash_manager
 
 
-@pytest.fixture(scope='module')
-def delete_test_dir():
+@pytest_asyncio.fixture(scope="function")
+async def temp_directory(lockdown: LockdownClient):
     yield
-    with create_using_usbmux() as lockdown_client:
-        with CrashReportsManager(lockdown_client) as crash_manager:
-            crash_manager.afc.rm(BASENAME)
+    async with CrashReportsManager(lockdown) as crash_manager:
+        with suppress(AfcFileNotFoundError):
+            await crash_manager.afc.rm(BASENAME)
 
 
-def test_ls_default(crash_manager, delete_test_dir):
-    crash_manager.afc.makedirs(PATH_COMPONENT)
-    assert PATH_COMPONENT in crash_manager.ls()
+async def test_ls_default(crash_manager: CrashReportsManager, temp_directory) -> None:
+    await crash_manager.afc.makedirs(PATH_COMPONENT)
+    assert PATH_COMPONENT in await crash_manager.ls()
 
 
-def test_ls_path(crash_manager, delete_test_dir):
-    crash_manager.afc.makedirs(PATH_COMPONENT * 2)
-    assert (PATH_COMPONENT * 2) in crash_manager.ls(path=PATH_COMPONENT)
+async def test_ls_path(crash_manager: CrashReportsManager, temp_directory) -> None:
+    await crash_manager.afc.makedirs(PATH_COMPONENT * 2)
+    assert (PATH_COMPONENT * 2) in await crash_manager.ls(path=PATH_COMPONENT)
 
 
-@pytest.mark.parametrize('depth', [2, 3, 4])
-def test_ls_depth(crash_manager, delete_test_dir, depth):
+@pytest.mark.parametrize("depth", [2, 3, 4])
+async def test_ls_depth(crash_manager: CrashReportsManager, temp_directory, depth: int) -> None:
     path = PATH_COMPONENT * depth
     path_list = [PATH_COMPONENT * i for i in range(1, depth + 1)]
-    crash_manager.afc.makedirs(path)
-    crash_list = crash_manager.ls(depth=depth)
+    await crash_manager.afc.makedirs(path)
+    crash_list = await crash_manager.ls(depth=depth)
     for item in path_list:
         assert item in crash_list
 
 
-def test_ls_depth_minus_one(crash_manager, delete_test_dir):
+async def test_ls_depth_minus_one(crash_manager: CrashReportsManager, temp_directory) -> None:
     path_list = [PATH_COMPONENT, PATH_COMPONENT * 2, PATH_COMPONENT * 3]
-    crash_manager.afc.makedirs(path_list[-1])
-    crash_list = crash_manager.ls(depth=-1)
+    await crash_manager.afc.makedirs(path_list[-1])
+    crash_list = await crash_manager.ls(depth=-1)
     for path in path_list:
         assert path in crash_list
 
 
-def test_clear(crash_manager, delete_test_dir):
-    crash_manager.afc.makedirs(PATH_COMPONENT)
+async def test_clear(crash_manager, temp_directory) -> None:
+    await crash_manager.afc.makedirs(PATH_COMPONENT)
     # true indication device time we can assure that every other file should create after it
-    test_dir_birth_time = crash_manager.afc.stat(PATH_COMPONENT)['st_birthtime']
-    crash_manager.clear()
-    crash_dirlist = crash_manager.ls(depth=-1)
+    test_dir_birth_time = (await crash_manager.afc.stat(PATH_COMPONENT))["st_birthtime"]
+    await crash_manager.clear()
+    crash_dirlist = await crash_manager.ls(depth=-1)
     assert PATH_COMPONENT not in crash_dirlist
     for path in crash_dirlist:
-        if crash_manager.APPSTORED_PATH != path:
-            assert crash_manager.afc.stat(path)['st_birthtime'] > test_dir_birth_time
+        if path != crash_manager.APPSTORED_PATH:
+            assert (await crash_manager.afc.stat(path))["st_birthtime"] > test_dir_birth_time
 
 
-def test_pull(crash_manager, delete_test_dir):
-    crash_manager.afc.makedirs(PATH_COMPONENT)
-    dir_list = crash_manager.ls(depth=-1)
-    crash_manager.pull(BASENAME)
-    pulled_list = [file[len(BASENAME):] for file in glob.glob(f'{BASENAME}/**', recursive=True)][1:]  # ignore root path
+async def test_pull(crash_manager, temp_directory, tmp_path: Path) -> None:
+    await crash_manager.afc.makedirs(PATH_COMPONENT)
+    dir_list = await crash_manager.ls(depth=-1)
+    out_dir = tmp_path / BASENAME
+    await crash_manager.pull(str(out_dir))
+    pulled_list = [f"/{path.relative_to(out_dir).as_posix()}" for path in sorted(out_dir.rglob("*"))]
     assert sorted(dir_list) == sorted(pulled_list)
-    shutil.rmtree(BASENAME)
+    shutil.rmtree(out_dir)
 
 
 @pytest.mark.parametrize(
-    ('end_time', 'return_value'),
-    ((-1, True), (0, True), (time.monotonic() + 1000, False), (None, False))
+    ("end_time", "return_value"),
+    ((-1, True), (0, True), (float("inf"), False), (None, False)),
 )
-def test_check_timeout(crash_manager, end_time, return_value):
+def test_check_timeout(crash_manager: CrashReportsManager, end_time: int, return_value: bool) -> None:
     assert crash_manager._check_timeout(end_time) is return_value

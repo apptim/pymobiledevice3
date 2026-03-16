@@ -1,56 +1,72 @@
-import click
+from pathlib import Path
+from typing import Annotated
 
-from pymobiledevice3.cli.cli_common import Command
-from pymobiledevice3.lockdown import LockdownClient
-from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
+import typer
+from typer_injector import InjectingTyper
+
+from pymobiledevice3.cli.cli_common import ServiceProviderDep, async_command
 from pymobiledevice3.services.afc import AfcService, AfcShell
 
-
-@click.group()
-def cli() -> None:
-    pass
-
-
-@cli.group()
-def afc() -> None:
-    """ Manage device multimedia files """
-    pass
+cli = InjectingTyper(
+    name="afc",
+    help="Browse, push, and pull files via the AFC service (/var/mobile/Media).",
+    no_args_is_help=True,
+)
 
 
-@afc.command('shell', cls=Command)
-def afc_shell(service_provider: LockdownClient):
-    """ open an AFC shell rooted at /var/mobile/Media """
+@cli.command("shell")
+def afc_shell(service_provider: ServiceProviderDep) -> None:
+    """Open an interactive AFC shell rooted at /var/mobile/Media."""
     AfcShell.create(service_provider)
 
 
-@afc.command('pull', cls=Command)
-@click.option('-i', '--ignore-errors', is_flag=True, help='Ignore AFC pull errors')
-@click.argument('remote_file', type=click.Path(exists=False))
-@click.argument('local_file', type=click.Path(exists=False))
-def afc_pull(service_provider: LockdownServiceProvider, remote_file: str, local_file: str, ignore_errors: bool) -> None:
-    """ pull remote file from /var/mobile/Media """
-    AfcService(lockdown=service_provider).pull(remote_file, local_file, ignore_errors=ignore_errors)
+@cli.command("pull")
+@async_command
+async def afc_pull(
+    service_provider: ServiceProviderDep,
+    remote_file: str,
+    local_file: Path,
+    ignore_errors: Annotated[
+        bool,
+        typer.Option(
+            "--ignore-errors",
+            "-i",
+            help="Continue downloading even if some files error (best-effort pull).",
+        ),
+    ],
+) -> None:
+    """Download a remote path under /var/mobile/Media to the local filesystem."""
+    async with AfcService(lockdown=service_provider) as afc:
+        await afc.pull(remote_file, str(local_file), ignore_errors=ignore_errors)
 
 
-@afc.command('push', cls=Command)
-@click.argument('local_file', type=click.Path(exists=False))
-@click.argument('remote_file', type=click.Path(exists=False))
-def afc_push(service_provider: LockdownServiceProvider, local_file: str, remote_file: str) -> None:
-    """ push local file into /var/mobile/Media """
-    AfcService(lockdown=service_provider).push(local_file, remote_file)
+@cli.command("push")
+@async_command
+async def afc_push(service_provider: ServiceProviderDep, local_file: Path, remote_file: str) -> None:
+    """Upload a local file into /var/mobile/Media."""
+    async with AfcService(lockdown=service_provider) as afc:
+        await afc.push(str(local_file), remote_file)
 
 
-@afc.command('ls', cls=Command)
-@click.argument('remote_file', type=click.Path(exists=False))
-@click.option('-r', '--recursive', is_flag=True)
-def afc_ls(service_provider: LockdownClient, remote_file, recursive):
-    """ perform a dirlist rooted at /var/mobile/Media """
-    for path in AfcService(lockdown=service_provider).dirlist(remote_file, -1 if recursive else 1):
-        print(path)
+@cli.command("ls")
+@async_command
+async def afc_ls(
+    service_provider: ServiceProviderDep,
+    remote_file: str,
+    recursive: Annotated[
+        bool,
+        typer.Option("--recursive", "-r", help="Recurse into subdirectories when listing."),
+    ] = False,
+) -> None:
+    """List files under /var/mobile/Media (optionally recursively)."""
+    async with AfcService(lockdown=service_provider) as afc:
+        async for path in afc.dirlist(remote_file, -1 if recursive else 1):
+            print(path)
 
 
-@afc.command('rm', cls=Command)
-@click.argument('remote_file', type=click.Path(exists=False))
-def afc_rm(service_provider: LockdownClient, remote_file):
-    """ remove a file rooted at /var/mobile/Media """
-    AfcService(lockdown=service_provider).rm(remote_file)
+@cli.command("rm")
+@async_command
+async def afc_rm(service_provider: ServiceProviderDep, remote_file: str) -> None:
+    """Delete a file under /var/mobile/Media."""
+    async with AfcService(lockdown=service_provider) as afc:
+        await afc.rm(remote_file)

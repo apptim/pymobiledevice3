@@ -1,49 +1,58 @@
 import logging
+from collections.abc import AsyncGenerator
+from typing import Any, Union
 
 import pytest
 import pytest_asyncio
 
 from pymobiledevice3.exceptions import DeviceNotFoundError, InvalidServiceError
-from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
-from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
+from pymobiledevice3.lockdown import UsbmuxLockdownClient, create_using_usbmux
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
-from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
-from pymobiledevice3.tunneld.api import async_get_tunneld_devices
+from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+from pymobiledevice3.services.dvt.testmanaged.xcuitest import XCUITestService
+from pymobiledevice3.tunneld.api import get_tunneld_devices
 
-logging.getLogger('quic').disabled = True
-logging.getLogger('asyncio').disabled = True
-logging.getLogger('zeroconf').disabled = True
-logging.getLogger('parso.cache').disabled = True
-logging.getLogger('parso.cache.pickle').disabled = True
-logging.getLogger('parso.python.diff').disabled = True
-logging.getLogger('humanfriendly.prompts').disabled = True
-logging.getLogger('blib2to3.pgen2.driver').disabled = True
-logging.getLogger('urllib3.connectionpool').disabled = True
+logging.getLogger("quic").disabled = True
+logging.getLogger("asyncio").disabled = True
+logging.getLogger("parso.cache").disabled = True
+logging.getLogger("parso.cache.pickle").disabled = True
+logging.getLogger("parso.python.diff").disabled = True
+logging.getLogger("humanfriendly.prompts").disabled = True
+logging.getLogger("blib2to3.pgen2.driver").disabled = True
+logging.getLogger("urllib3.connectionpool").disabled = True
 
 
 def pytest_addoption(parser):
-    parser.addoption('--rsd', default=None, type=str, nargs=2, action='store')
-    parser.addoption('--tunnel', default=None, type=str, action='store')
+    parser.addoption("--rsd", default=None, type=str, nargs=2, action="store")
+    parser.addoption("--tunnel", default=None, type=str, action="store")
+    parser.addoption(
+        "--xcuitest-config",
+        default=None,
+        metavar="PATH",
+        help="Path to xcuitest JSON config file",
+    )
 
 
-@pytest.fixture(scope='function')
+@pytest.fixture(scope="function")
 def rsd_option(request):
     """
     Get --rsd option
     """
-    return request.config.getoption('--rsd')
+    return request.config.getoption("--rsd")
 
 
-@pytest.fixture(scope='function')
+@pytest.fixture(scope="function")
 def tunnel_option(request):
     """
     Get --tunnel option
     """
-    return request.config.getoption('--tunnel')
+    return request.config.getoption("--tunnel")
 
 
-@pytest_asyncio.fixture(scope='function')
-async def service_provider(rsd_option, tunnel_option) -> LockdownServiceProvider:
+@pytest_asyncio.fixture(scope="function")
+async def service_provider(
+    rsd_option, tunnel_option
+) -> AsyncGenerator[Union[RemoteServiceDiscoveryService, UsbmuxLockdownClient, Any]]:
     """
     Creates a new LockdownServiceProvider client for each test.
     """
@@ -51,37 +60,58 @@ async def service_provider(rsd_option, tunnel_option) -> LockdownServiceProvider
         async with RemoteServiceDiscoveryService(rsd_option) as rsd:
             yield rsd
     elif tunnel_option is not None:
-        rsds = await async_get_tunneld_devices()
+        rsds = await get_tunneld_devices()
         try:
-            if tunnel_option == '':
-                yield rsds[0]
+            if tunnel_option == "":
+                try:
+                    selected_rsd = rsds[0]
+                except IndexError as e:
+                    raise DeviceNotFoundError(tunnel_option) from e
             else:
-                yield [rsd for rsd in rsds if rsd.udid == tunnel_option][0]
+                selected_rsd = next((rsd for rsd in rsds if rsd.udid == tunnel_option), None)
+                if selected_rsd is None:
+                    raise DeviceNotFoundError(tunnel_option)
+
+            yield selected_rsd
+        finally:
             for rsd in rsds:
                 await rsd.close()
-        except IndexError:
-            raise DeviceNotFoundError(tunnel_option)
     else:
-        with create_using_usbmux() as client:
+        async with await create_using_usbmux() as client:
             yield client
 
 
-@pytest.fixture(scope='function')
-def dvt(service_provider) -> DvtSecureSocketProxyService:
+@pytest_asyncio.fixture(scope="function")
+async def dvt(service_provider) -> AsyncGenerator[DvtProvider, Any]:
     """
-    Creates a new DvtSecureSocketProxyService client for each test.
+    Creates a new DVT provider for each test.
     """
     try:
-        with DvtSecureSocketProxyService(lockdown=service_provider) as dvt:
+        async with DvtProvider(service_provider) as dvt:
             yield dvt
     except InvalidServiceError:
-        pytest.skip('Skipping DVT-based test since the service isn\'t accessible')
+        pytest.skip("Skipping DVT-based test since the DVT provider service isn't accessible")
 
 
-@pytest.fixture(scope='function')
-def lockdown(request) -> LockdownClient:
+@pytest_asyncio.fixture(scope="function")
+async def lockdown() -> AsyncGenerator[UsbmuxLockdownClient, Any]:
     """
     Creates a new lockdown client for each test.
     """
-    with create_using_usbmux() as client:
+    async with await create_using_usbmux() as client:
         yield client
+
+
+@pytest_asyncio.fixture(scope="function")
+async def xcuitest_service(service_provider) -> AsyncGenerator[XCUITestService, Any]:
+    """
+    Creates a new XCUITestService client for each test.
+    """
+    try:
+        # check manually, as the XCUITestService currently connect to the needed services
+        # only when starting the test ( shall we change this? )
+        async with DvtProvider(service_provider):
+            pass
+        return XCUITestService(service_provider)
+    except InvalidServiceError:
+        pytest.skip("Skipping XCUITest-based test since the service isn't accessible")

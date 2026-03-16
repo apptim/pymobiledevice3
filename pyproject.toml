@@ -4,14 +4,22 @@ description = "Pure python3 implementation for working with iDevices (iPhone, et
 readme = "README.md"
 requires-python = ">=3.9"
 license = "GPL-3.0-or-later"
-keywords = ["ios", "protocol", "lockdownd", "instruments", "automation", "cli", "afc"]
+keywords = [
+    "ios",
+    "protocol",
+    "lockdownd",
+    "instruments",
+    "automation",
+    "cli",
+    "afc",
+]
 authors = [
     { name = "doronz88", email = "doron88@gmail.com" },
-    { name = "matan", email = "matan1008@gmail.com" }
+    { name = "matan", email = "matan1008@gmail.com" },
 ]
 maintainers = [
     { name = "doronz88", email = "doron88@gmail.com" },
-    { name = "matan", email = "matan1008@gmail.com" }
+    { name = "matan", email = "matan1008@gmail.com" },
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -21,12 +29,14 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
 ]
 dynamic = ["dependencies", "version"]
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-asyncio"]
+full = ["defusedxml", "pytest"]
 
 [project.urls]
 "Homepage" = "https://github.com/doronz88/pymobiledevice3"
@@ -36,14 +46,18 @@ test = ["pytest", "pytest-asyncio"]
 pymobiledevice3 = "pymobiledevice3.__main__:main"
 
 [tool.setuptools]
-package-data = { "pymobiledevice3" = ["resources/webinspector/*.js", "resources/dsc_uuid_map.json", "resources/notifications.txt"] }
+package-data = { "pymobiledevice3" = [
+    "resources/webinspector/*.js",
+    "resources/dsc_uuid_map.json",
+    "resources/notifications.txt",
+] }
 
 [tool.setuptools.packages.find]
 exclude = ["docs*", "tests*"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
-version = {attr = "pymobiledevice3._version.__version__"}
+version = { attr = "pymobiledevice3._version.__version__" }
 
 [tool.setuptools_scm]
 version_file = "pymobiledevice3/_version.py"
@@ -51,3 +65,59 @@ version_file = "pymobiledevice3/_version.py"
 [build-system]
 requires = ["setuptools>=43.0.0", "setuptools_scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+fix = true
+
+[tool.ruff.lint]
+select = [
+    # flake8-2020
+    "YTT",
+    # flake8-bugbear
+    "B",
+    # flake8-builtins
+    "A",
+    # flake8-comprehensions
+    "C4",
+    # flake8-debugger
+    "T10",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+    # pycodestyle
+    "E",
+    "W",
+    # pyflakes
+    "F",
+    # pygrep-hooks
+    "PGH",
+    # pyupgrade
+    "UP",
+    # ruff
+    "RUF",
+    # tryceratops
+    "TRY",
+]
+ignore = [
+    # Shadowing a built-in
+    "A001",
+    # LineTooLong
+    "E501",
+    # Custom error classes
+    "TRY003",
+    # Use `logging.exception` instead of `logging.error`
+    "TRY400",
+    # Abstract `raise` to an inner function
+    "TRY301",
+    # Do not perform function call `csfield` in dataclass defaults
+    "RUF009",
+    # Use X | None instead of Optional
+    "UP045",
+]
+
+
+[tool.ruff.format]
+preview = true

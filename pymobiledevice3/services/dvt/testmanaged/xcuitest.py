@@ -1,303 +1,366 @@
-import logging
-import time
-from typing import Any, Optional
+"""XCUITest execution via the new DTX protocol implementation.
 
-from bpylist2 import archiver
+Typical usage::
+
+    async with XCUITestService(lockdown) as svc:
+        cfg = await TestConfig.create_for(lockdown, runner_bundle_id="com.example.MyAppUITests.xctrunner", target_bundle_id="com.example.MyApp")
+        await svc.run(cfg, timeout=300.0)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import Optional, cast
+
 from packaging.version import Version
 
-from pymobiledevice3.exceptions import AppNotInstalledError
-from pymobiledevice3.lockdown import LockdownClient
+from pymobiledevice3.dtx import (
+    NSURL,
+    NSUUID,
+)
+from pymobiledevice3.dtx.service import DTXProxyService as _DTXProxyService
+from pymobiledevice3.dtx_proxy_service import DtxProxyService
+from pymobiledevice3.dtx_service import DtxService
+from pymobiledevice3.dtx_service_provider import DtxServiceProvider
+from pymobiledevice3.exceptions import AppNotInstalledError, ConnectionTerminatedError
 from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
-from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
-from pymobiledevice3.services.dvt.dvt_testmanaged_proxy import DvtTestmanagedProxyService
-from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
-from pymobiledevice3.services.house_arrest import HouseArrestService
+from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider as InstrumentsDvtProvider
+from pymobiledevice3.services.dvt.testmanaged.dtx_services import (  # noqa: F401 — re-exported
+    ProcessControlService,
+    XCTestCaseResult,
+    XCTestDriverInterface,
+    XCTestManager_DaemonConnectionInterface,
+    XCTestManager_IDEInterface,
+    XCUITestListener,
+)
+from pymobiledevice3.services.dvt.testmanaged.xctest_types import (
+    XCTestConfiguration,
+)
 from pymobiledevice3.services.installation_proxy import InstallationProxyService
-from pymobiledevice3.services.remote_server import NSURL, NSUUID, Channel, ChannelFragmenter, MessageAux, \
-    XCTestConfiguration, dtx_message_header_struct, dtx_message_payload_header_struct
 
 logger = logging.getLogger(__name__)
+XCODE_VERSION = 36
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+
+class _TestManagerProvider(DtxServiceProvider):
+    """DTX transport to ``testmanagerd``.
+
+    Registers the three XCTest service classes so the connection can
+    instantiate them when either side opens a channel.
+    """
+
+    SERVICE_NAME = "com.apple.testmanagerd.lockdown.secure"
+    RSD_SERVICE_NAME = "com.apple.dt.testmanagerd.remote"
+    OLD_SERVICE_NAME = "com.apple.testmanagerd.lockdown"
+
+
+class ProxyIdeToDaemonService(DtxProxyService[XCTestManager_IDEInterface, XCTestManager_DaemonConnectionInterface]):
+    pass
+
+
+class ProxyIdeToDriverService(DtxProxyService[XCTestManager_IDEInterface, XCTestDriverInterface]):
+    async def _acquire_channel(self) -> _DTXProxyService:
+        # Wait for the runner to open the reverse dtxproxy channel.
+        logger.debug("Waiting for XCTestDriverInterface from runner ...")
+
+        try:
+            remote_svc = await self.dtx.wait_for_proxied_service(XCTestDriverInterface, remote=True, timeout=30.0)
+        except asyncio.TimeoutError:
+            raise RuntimeError("Timed out waiting for XCTestDriverInterface — runner did not connect") from None
+        else:
+            return remote_svc.dtxproxy
+
+
+class ProcessControlChannel(DtxService[ProcessControlService]):
+    """Opens the ProcessControl service channel on the DVT connection."""
 
 
 class XCUITestService:
-    IDENTIFIER = "dtxproxy:XCTestManager_IDEInterface:XCTestManager_DaemonConnectionInterface"
-    XCODE_VERSION = 36  # not important
+    """Orchestrates an XCUITest run using :class:`DTXConnection`.
 
-    def __init__(self, service_provider: LockdownServiceProvider):
-        self.service_provider = service_provider
-        self.pctl = self.init_process_control()
-        self.product_major_version = Version(service_provider.product_version).major
+    Service name selection is handled by :class:`_TestManagerProvider` and
+    :class:`_DvtProvider` via :meth:`~DtxServiceProvider.service_name_for`,
+    which mirrors the pattern used across the codebase:
 
-    def run(
+    - RSD (iOS 17+ / tunnel) → ``RSD_SERVICE_NAME``
+    - iOS ≥ 14.0 over lockdown → ``SERVICE_NAME``
+    - iOS < 14.0 → ``OLD_SERVICE_NAME`` with SSL-context strip
+
+    Usage::
+
+        svc = XCUITestService(service_provider)
+        await svc.run("com.example.MyAppUITests.xctrunner",
+                      env={"AUT_BundleID": "com.example.MyApp"})
+    """
+
+    def __init__(self, lockdown: LockdownServiceProvider) -> None:
+        self.lockdown = lockdown
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    async def run(
         self,
-        bundle_id: str,
-        test_runner_env: Optional[dict] = None,
-        test_runner_args: Optional[list] = None,
-    ):
-        # Test OK with
-        # - iPhone SE (iPhone8,4) 15.8
-        #
-        # Test Failed with
-        # - iPhone 12 Pro (iPhone13,3) 17.2
-        #
-        # TODO: it seems the protocol changed when iOS>=17
-        session_identifier = NSUUID.uuid4()
-        app_info = get_app_info(self.service_provider, bundle_id)
+        cfg: TestConfig,
+        timeout: Optional[float] = None,
+        test_done_event: Optional[asyncio.Event] = None,
+        listener: Optional[XCUITestListener] = None,
+    ) -> None:
+        """Run the XCUITest wait for completion.
 
-        xctest_configuration = generate_xctestconfiguration(
-            app_info, session_identifier, bundle_id, test_runner_env, test_runner_args
-        )
-        xctest_path = f"/tmp/{str(session_identifier).upper()}.xctestconfiguration"  # yapf: disable
+        :param cfg: TestConfig with test runner and target app information, as well as test selection.
+        :param timeout: Seconds to wait for ``_XCT_didFinishExecutingTestPlan``
+            after the test plan starts.  ``TimeoutError`` is raised on expiry.
+        :param listener: Optional :class:`XCUITestListener` instance to receive
+            lifecycle events (test suite/case start/finish, failures, etc.).
+        """
+        test_done = test_done_event or asyncio.Event()
 
-        self.setup_xcuitest(bundle_id, xctest_path, xctest_configuration)
-        dvt1, chan1, dvt2, chan2 = self.init_ide_channels(session_identifier)
+        sid = NSUUID.uuid4()
+        xctest_config = cfg.to_xctestconfiguration(sid, self.lockdown)
+        product_major_version = Version(self.lockdown.product_version).major
+        bundle_id = cfg.runner_app_info["CFBundleIdentifier"]
+        env = cfg.runner_app_env
+        args = cfg.runner_app_args
+        xctest_path = f"/tmp/{str(sid).upper()}.xctestconfiguration"
 
-        pid = self.launch_test_app(
-            app_info, bundle_id, xctest_path, test_runner_env, test_runner_args
-        )
-        logger.info("Runner started with pid:%d, waiting for testBundleReady", pid)
+        dvt_provider = InstrumentsDvtProvider(self.lockdown)
+        control_test_manager_provider = _TestManagerProvider(self.lockdown)
+        main_test_manager_provider = _TestManagerProvider(self.lockdown)
 
-        time.sleep(1)
-        self.authorize_test_process_id(chan1, pid)
-        self.start_executing_test_plan_with_protocol_version(dvt2, self.XCODE_VERSION)
+        async with dvt_provider, control_test_manager_provider, main_test_manager_provider:
+            # Inject per-run context into the TM connections after connect().
+            for tm_prov in (control_test_manager_provider, main_test_manager_provider):
+                tm_prov.dtx.ctx["xctest_config"] = xctest_config
+                tm_prov.dtx.ctx["test_done_event"] = test_done
+                if listener is not None:
+                    tm_prov.dtx.ctx["xcuitest_listener"] = listener
 
-        # TODO: boradcast message is not handled
-        # TODO: RemoteServer.receive_message is not thread safe and will block if no message received
-        try:
-            self.dispatch(dvt2, chan2)
-        except KeyboardInterrupt:
-            logger.info("Signal Interrupt catched")
-        finally:
-            logger.info("Killing UITest with pid %d ...", pid)
-            self.pctl.kill(pid)
-            dvt1.close()
-            dvt2.close()
+            # Open control and main dtxproxy channels.
+            ctrl_proxy = ProxyIdeToDaemonService(control_test_manager_provider)
+            main_proxy = ProxyIdeToDaemonService(main_test_manager_provider)
+            process_control_channel = ProcessControlChannel(dvt_provider)
+            driver_ch = ProxyIdeToDriverService(main_test_manager_provider)
 
-    def dispatch(self, dvt: DvtTestmanagedProxyService, chan: Channel):
-        while True:
-            self.dispatch_proxy(dvt, chan)
+            async with ctrl_proxy, main_proxy, process_control_channel:
+                ctrl_daemon = cast(
+                    XCTestManager_DaemonConnectionInterface,
+                    ctrl_proxy.service.remote_service,
+                )
+                main_daemon = cast(
+                    XCTestManager_DaemonConnectionInterface,
+                    main_proxy.service.remote_service,
+                )
 
-    def dispatch_proxy(self, dvt: DvtTestmanagedProxyService, chan: Channel):
-        # Ref code:
-        # https://github.com/danielpaulus/go-ios/blob/a49a3582ef4438fee794912c167d2cccf45d8efa/ios/testmanagerd/xcuitestrunner.go#L182
-        # https://github.com/alibaba/tidevice/blob/main/tidevice/_device.py#L1117
+                logger.debug("Initializing ctrl session ...")
+                ctrl_result = await ctrl_daemon.init_ctrl_session(product_major_version)
+                logger.debug("ctrl session result: %r", ctrl_result)
 
-        key, value = dvt.recv_plist(chan)
-        value = value and value[0].value.strip()
-        if key == "_XCT_logDebugMessage:":
-            logger.debug("logDebugMessage: %s", value)
-        elif key == "_XCT_testRunnerReadyWithCapabilities:":
-            logger.info("testRunnerReadyWithCapabilities: %s", value)
-            self.send_response_capabilities(dvt, chan, dvt.cur_message)
-        else:
-            # There are still unhandled messages
-            # - _XCT_testBundleReadyWithProtocolVersion:minimumVersion:
-            # - _XCT_didFinishExecutingTestPlan
-            logger.info("unhandled %s %r", key, value)
+                logger.debug("Initializing main session (session-id=%s) ...", sid)
+                main_result = await main_daemon.init_session(product_major_version, sid, xctest_config)
+                logger.debug("main session result: %r", main_result)
 
-    def send_response_capabilities(
-        self, dvt: DvtTestmanagedProxyService, chan: Channel, cur_message: int
-    ):
-        pheader = dtx_message_payload_header_struct.build(
-            dict(flags=3, auxiliaryLength=0, totalLength=0)
-        )
-        mheader = dtx_message_header_struct.build(
-            dict(
-                cb=dtx_message_header_struct.sizeof(),
-                fragmentId=0,
-                fragmentCount=1,
-                length=dtx_message_payload_header_struct.sizeof(),
-                identifier=cur_message,
-                conversationIndex=1,
-                channelCode=chan,
-                expectsReply=int(0),
+                # Launch the test runner process.
+                launch_args, launch_env, launch_options = _generate_launch_args(
+                    product_major_version, sid, cfg.runner_app_info, xctest_path, env, args
+                )
+                pid = await process_control_channel.service.launch_suspended_process(
+                    "", bundle_id, launch_env, launch_args, launch_options
+                )
+                logger.debug("Launched test runner pid=%d", pid)
+
+                if product_major_version < 17:
+                    await asyncio.sleep(1)
+
+                logger.debug("Authorizing test session for pid=%d ...", pid)
+                auth = await ctrl_daemon.authorize_test(product_major_version, pid)
+                logger.debug("authorize_test result: %r", auth)
+
+                # Wait for the runner to open the reverse dtxproxy channel.
+                logger.debug("Waiting for XCTestDriverInterface from runner ...")
+
+                async with driver_ch:
+                    driver_iface = driver_ch.remote_service
+                    logger.debug("Starting test plan execution ...")
+                    await driver_iface.start_executing_test_plan(XCODE_VERSION)
+
+                    timeout_str = f"{timeout:.1f}s" if timeout is not None else "unlimited time"
+                    logger.debug("Waiting for test completion (timeout=%s) ...", timeout_str)
+
+                    # Race test-done event against the runner connection dropping.
+                    # When the test runner terminates itself (e.g. because a test
+                    # case calls Terminate on the xctrunner process), the DTX TCP
+                    # connection is reset before _XCT_didFinishExecutingTestPlan
+                    # can be sent.  In that case _disconnected fires first and we
+                    # raise ConnectionTerminatedError rather than hanging.
+                    done_fut = asyncio.ensure_future(test_done.wait())
+                    disc_fut = asyncio.ensure_future(main_test_manager_provider.dtx.wait_disconnected())
+                    try:
+                        done_set, _ = await asyncio.wait(
+                            {done_fut, disc_fut},
+                            timeout=timeout,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        done_fut.cancel()
+                        disc_fut.cancel()
+                        with suppress(asyncio.CancelledError, Exception):
+                            await asyncio.gather(done_fut, disc_fut, return_exceptions=True)
+
+                    if not done_set:
+                        raise TimeoutError(f"Test did not finish within {timeout_str}")
+                    if not test_done.is_set():
+                        raise ConnectionTerminatedError(
+                            "Runner DTX connection closed before _XCT_didFinishExecutingTestPlan"
+                            " — the test runner likely terminated itself mid-plan"
+                        )
+
+
+@dataclass
+class TestConfig:
+    runner_app_info: dict
+
+    runner_app_env: Optional[dict] = None
+    runner_app_args: Optional[list] = None
+
+    target_app_info: Optional[dict] = None
+    target_app_env: Optional[dict] = None
+    target_app_args: Optional[list] = None
+    tests_to_run: Optional[list] = None
+    tests_to_skip: Optional[list] = None
+
+    @staticmethod
+    async def create_for(
+        service_provider: LockdownServiceProvider, runner_bundle_id: str, target_bundle_id: Optional[str] = None
+    ) -> TestConfig:
+        """Helper to create a TestConfig with the required runner_app_info and optional target_app_info."""
+        runner_app_info: dict
+        target_app_info: Optional[dict] = None
+
+        async with InstallationProxyService(lockdown=service_provider) as install_service:
+            apps = await install_service.get_apps(
+                bundle_identifiers=[runner_bundle_id] + ([target_bundle_id] if target_bundle_id else [])
             )
-        )
-        msg = mheader + pheader
-        dvt.service.sendall(msg)
+            if runner_bundle_id not in apps:
+                raise AppNotInstalledError(f"No app with bundle id {runner_bundle_id} found")
+            runner_app_info = apps[runner_bundle_id]
+            if target_bundle_id:
+                if target_bundle_id not in apps:
+                    raise AppNotInstalledError(f"No app with bundle id {target_bundle_id} found")
+                target_app_info = apps[target_bundle_id]
 
-    def init_process_control(self):
-        dvt_proxy = DvtSecureSocketProxyService(lockdown=self.service_provider)
-        dvt_proxy.perform_handshake()
-        return ProcessControl(dvt_proxy)
+        return TestConfig(runner_app_info=runner_app_info, target_app_info=target_app_info)
 
-    def init_ide_channels(self, session_identifier: NSUUID):
-        # XcodeIDE require two connections
-        dvt1 = DvtTestmanagedProxyService(lockdown=self.service_provider)
-        dvt1.perform_handshake()
+    def to_xctestconfiguration(
+        self, session_identifier: NSUUID, service_provider: LockdownServiceProvider
+    ) -> XCTestConfiguration:
+        assert self.runner_app_info, "runner_app_info must be set"
 
-        logger.info("make channel %s", self.IDENTIFIER)
-        chan1 = dvt1.make_channel(self.IDENTIFIER)
-        if self.product_major_version >= 11:
-            dvt1.send_message(
-                chan1,
-                "_IDE_initiateControlSessionWithProtocolVersion:",
-                MessageAux().append_obj(self.XCODE_VERSION),
+        cfg = {}
+        exec_name: str = self.runner_app_info["CFBundleExecutable"]
+        assert exec_name.endswith("-Runner"), f"Invalid CFBundleExecutable: {exec_name}"
+        config_name = exec_name[: -len("-Runner")]
+
+        cfg["testBundleURL"] = NSURL(None, f"file://{self.runner_app_info['Path']}/PlugIns/{config_name}.xctest")
+
+        cfg["automationFrameworkPath"] = "/Developer/Library/PrivateFrameworks/XCTAutomationSupport.framework"
+        if Version(service_provider.product_version).major >= 17:
+            cfg["automationFrameworkPath"] = (
+                "/System/Developer/Library/PrivateFrameworks/XCTAutomationSupport.framework"
             )
-            reply = chan1.receive_plist()
-            logger.info("conn1 handshake xcode version: %s", reply)
 
-        dvt2 = DvtTestmanagedProxyService(lockdown=self.service_provider)
-        dvt2.perform_handshake()
-        chan2 = dvt2.make_channel(self.IDENTIFIER)
-        dvt2.send_message(
-            channel=chan2,
-            selector="_IDE_initiateSessionWithIdentifier:forClient:atPath:protocolVersion:",
-            args=MessageAux()
-            .append_obj(session_identifier)
-            .append_obj("not-very-import-part")  # this part is not important
-            .append_obj("/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild")
-            .append_obj(self.XCODE_VERSION),
-        )
-        reply = chan2.receive_plist()
-        logger.info("conn2 handshake xcode version: %s", reply)
-        return dvt1, chan1, dvt2, chan2
+        if self.target_app_info is not None:
+            assert self.target_app_info != self.runner_app_info, (
+                "target_app_info must be different from runner_app_info"
+            )
+            cfg["productModuleName"] = config_name
+            cfg["targetApplicationBundleID"] = self.target_app_info.get("CFBundleIdentifier")
+            cfg["targetApplicationPath"] = self.target_app_info.get("Path")
+            cfg["targetApplicationEnvironment"] = self.target_app_env or {}
+            cfg["targetApplicationArguments"] = self.target_app_args or []
+            assert cfg["targetApplicationPath"], "targetApplicationPath must be set if target_app_info is provided"
+            assert cfg["targetApplicationBundleID"], (
+                "targetApplicationBundleID must be set if target_app_info is provided"
+            )
 
-    def setup_xcuitest(
-        self,
-        bundle_id: str,
-        xctest_path: str,
-        xctest_configuration: XCTestConfiguration,
-    ):
-        """push xctestconfiguration to app VendDocuments"""
-        with HouseArrestService(
-            lockdown=self.service_provider, bundle_id=bundle_id, documents_only=False
-        ) as afc:
-            for name in afc.listdir("/tmp"):
-                if name.endswith(".xctestconfiguration"):
-                    logger.debug("remove /tmp/%s", name)
-                    afc.rm("/tmp/" + name)
-            afc.set_file_contents(xctest_path, archiver.archive(xctest_configuration))
-
-    def start_executing_test_plan_with_protocol_version(self, dvt: DvtTestmanagedProxyService, protocol_version: int):
-        ide_channel = Channel.create(-1, dvt)
-        dvt.channel_messages[ide_channel] = ChannelFragmenter()
-        dvt.send_message(
-            ide_channel,
-            "_IDE_startExecutingTestPlanWithProtocolVersion:",
-            MessageAux().append_obj(protocol_version),
-            expects_reply=False,
-        )
-
-    def authorize_test_process_id(self, chan: Channel, pid: int):
-        selector = None
-        aux = MessageAux()
-        if self.product_major_version >= 12:
-            selector = "_IDE_authorizeTestSessionWithProcessID:"
-            aux.append_obj(pid)
-        elif self.product_major_version >= 10:
-            selector = "_IDE_initiateControlSessionForTestProcessID:protocolVersion:"
-            aux.append_obj(pid)
-            aux.append_obj(self.XCODE_VERSION)
-        else:
-            selector = "_IDE_initiateControlSessionForTestProcessID:"
-            aux.append_obj(pid)
-        chan.send_message(selector, aux)
-        reply = chan.receive_plist()
-        if isinstance(reply, bool) and reply is True:
-            logger.info("authorizing test session for pid %d successful %r", pid, reply)
-        else:
-            raise RuntimeError("Failed to authorize test process id: %s" % reply)
-
-    def launch_test_app(
-        self,
-        app_info: dict,
-        bundle_id: str,
-        xctest_path: str,
-        test_runner_env: Optional[dict] = None,
-        test_runner_args: Optional[list] = None,
-    ) -> int:
-        app_container = app_info["Container"]
-        app_path = app_info["Path"]
-        exec_name = app_info["CFBundleExecutable"]
-        # # logger.info('CFBundleExecutable: %s', exec_name)
-        # # CFBundleName always endswith -Runner
-        assert exec_name.endswith("-Runner"), (
-            "Invalid CFBundleExecutable: %s" % exec_name
-        )
-        target_name = exec_name[: -len("-Runner")]
-
-        app_env = {
-            "CA_ASSERT_MAIN_THREAD_TRANSACTIONS": "0",
-            "CA_DEBUG_TRANSACTIONS": "0",
-            "DYLD_FRAMEWORK_PATH": app_path + "/Frameworks:",
-            "DYLD_LIBRARY_PATH": app_path + "/Frameworks",
-            "MTC_CRASH_ON_REPORT": "1",
-            "NSUnbufferedIO": "YES",
-            "SQLITE_ENABLE_THREAD_ASSERTIONS": "1",
-            "WDA_PRODUCT_BUNDLE_IDENTIFIER": "",
-            "XCTestBundlePath": f'{app_info["Path"]}/PlugIns/{target_name}.xctest',
-            "XCTestConfigurationFilePath": app_container + xctest_path,
-            "XCODE_DBG_XPC_EXCLUSIONS": "com.apple.dt.xctestSymbolicator",
-            # the following maybe no needed
-            # 'MJPEG_SERVER_PORT': '',
-            # 'USE_PORT': '',
-            # 'LLVM_PROFILE_FILE': app_container + '/tmp/%p.profraw', # %p means pid
-        }
-        if test_runner_env:
-            app_env.update(test_runner_env)
-
-        if self.product_major_version >= 11:
-            app_env[
-                "DYLD_INSERT_LIBRARIES"
-            ] = "/Developer/usr/lib/libMainThreadChecker.dylib"
-            app_env["OS_ACTIVITY_DT_MODE"] = "YES"
-
-        app_args = [
-            "-NSTreatUnknownArgumentsAsOpen",
-            "NO",
-            "-ApplePersistenceIgnoreState",
-            "YES",
-        ]
-        app_args.extend(test_runner_args or [])
-        app_options = {"StartSuspendedKey": False}
-        if self.product_major_version >= 12:
-            app_options["ActivateSuspended"] = True
-
-        pid = self.pctl.launch(
-            bundle_id,
-            arguments=app_args,
-            environment=app_env,
-            extra_options=app_options,
-        )
-        for message in self.pctl:
-            logger.info("ProcessOutput: %s", message)
-        return pid
-
-
-def get_app_info(service_provider: LockdownClient, bundle_id: str) -> dict[str, Any]:
-    with InstallationProxyService(lockdown=service_provider) as install_service:
-        apps = install_service.get_apps(bundle_identifiers=[bundle_id])
-        if not apps:
-            raise AppNotInstalledError(f"No app with bundle id {bundle_id} found")
-        return apps[bundle_id]
-
-
-def generate_xctestconfiguration(
-    app_info: dict,
-    session_identifier: NSUUID,
-    target_app_bundle_id: str = None,
-    target_app_env: Optional[dict] = None,
-    target_app_args: Optional[list] = None,
-    tests_to_run: Optional[list] = None,
-) -> XCTestConfiguration:
-    exec_name: str = app_info["CFBundleExecutable"]
-    assert exec_name.endswith("-Runner"), "Invalid CFBundleExecutable: %s" % exec_name
-    config_name = exec_name[: -len("-Runner")]
-
-    return XCTestConfiguration(
-        {
-            "testBundleURL": NSURL(
-                None, f'file://{app_info["Path"]}/PlugIns/{config_name}.xctest'
-            ),
+        return XCTestConfiguration({
+            "testBundleURL": NSURL(None, f"file://{self.runner_app_info['Path']}/PlugIns/{config_name}.xctest"),
             "sessionIdentifier": session_identifier,
-            "targetApplicationBundleID": target_app_bundle_id,
-            "targetApplicationEnvironment": target_app_env or {},
-            "targetApplicationArguments": target_app_args or [],
-            "testsToRun": tests_to_run or set(),
+            "testsToRun": self.tests_to_run or set(),
+            "testsToSkip": self.tests_to_skip or set(),
             "testsMustRunOnMainThread": True,
             "reportResultsToIDE": True,
             "reportActivities": True,
-            "automationFrameworkPath": "/Developer/Library/PrivateFrameworks/XCTAutomationSupport.framework",
-        }
-    )
+            "testApplicationDependencies": None,
+            **cfg,
+        })
+
+
+def _generate_launch_args(
+    product_major_version: int,
+    test_session_identifier: NSUUID,
+    app_info: dict,
+    xctest_path: str,
+    test_runner_env: Optional[dict] = None,
+    test_runner_args: Optional[list] = None,
+) -> tuple[list, dict, dict]:
+    """Return *(app_args, app_env, app_options)* for launching the test runner.
+
+    Extracted from the old ``launch_test_app`` method so that it can be
+    shared between :class:`XCUITestService` and lower-level probe tests.
+    """
+    app_container = app_info["Container"]
+    app_path = app_info["Path"]
+    exec_name = app_info["CFBundleExecutable"]
+    assert exec_name.endswith("-Runner"), f"Invalid CFBundleExecutable: {exec_name}"
+    target_name = exec_name[: -len("-Runner")]
+
+    app_env = {
+        "CA_ASSERT_MAIN_THREAD_TRANSACTIONS": "0",
+        "CA_DEBUG_TRANSACTIONS": "0",
+        "DYLD_FRAMEWORK_PATH": app_path + "/Frameworks:",
+        "DYLD_LIBRARY_PATH": app_path + "/Frameworks",
+        "MTC_CRASH_ON_REPORT": "1",
+        "NSUnbufferedIO": "YES",
+        "SQLITE_ENABLE_THREAD_ASSERTIONS": "1",
+        "WDA_PRODUCT_BUNDLE_IDENTIFIER": "",
+        "XCTestBundlePath": f"{app_path}/PlugIns/{target_name}.xctest",
+        "XCTestConfigurationFilePath": app_container + xctest_path,
+        "XCODE_DBG_XPC_EXCLUSIONS": "com.apple.dt.xctestSymbolicator",
+        "XCTestSessionIdentifier": str(test_session_identifier).upper(),
+    }
+
+    if product_major_version >= 11:
+        app_env["DYLD_INSERT_LIBRARIES"] = "/Developer/usr/lib/libMainThreadChecker.dylib"
+        app_env["OS_ACTIVITY_DT_MODE"] = "YES"
+    if product_major_version >= 17:
+        app_env["DYLD_FRAMEWORK_PATH"] = f"${app_env['DYLD_FRAMEWORK_PATH']}/System/Developer/Library/Frameworks:"
+        app_env["DYLD_LIBRARY_PATH"] = f"${app_env['DYLD_LIBRARY_PATH']}:/System/Developer/usr/lib"
+        app_env["XCTestConfigurationFilePath"] = ""  # sent as return value of _XCT_testRunnerReadyWithCapabilities
+        app_env["XCTestManagerVariant"] = "DDI"
+
+    if test_runner_env:
+        app_env.update(test_runner_env)
+
+    app_args = [
+        "-NSTreatUnknownArgumentsAsOpen",
+        "NO",
+        "-ApplePersistenceIgnoreState",
+        "YES",
+    ]
+    app_args.extend(test_runner_args or [])
+
+    app_options: dict = {"StartSuspendedKey": False}
+    if product_major_version >= 12:
+        app_options["ActivateSuspended"] = True
+
+    return app_args, app_env, app_options

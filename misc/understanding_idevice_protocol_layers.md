@@ -58,17 +58,19 @@ The same can be accessed via python API:
 ```python
 from pymobiledevice3.usbmux import list_devices
 
-# Listing all connected devices locally
-usbmux_devices = list_devices()
 
-# Or if using corellium, or any other remote usbmuxd
-usbmux_devices = list_devices('10.11.1.2:5000')
-
-# Now may list them and establish a TCP connection to any port on-device
-for device in usbmux_devices:
-    # The serial can either be the device UDID if it's connected via USB, or its Wi-Fi mac address
-    if device.serial == '11223344':
-        sock = device.connect(22)  # return a pure python socket object
+async def main() -> None: 
+  # Listing all connected devices locally
+  usbmux_devices = await list_devices()
+  
+  # Or if using corellium, or any other remote usbmuxd
+  usbmux_devices = await list_devices('10.11.1.2:5000')
+  
+  # Now may list them and establish a TCP connection to any port on-device
+  for device in usbmux_devices:
+      # The serial can either be the device UDID if it's connected via USB, or its Wi-Fi mac address
+      if device.serial == '11223344':
+          sock = await device.connect(22)  # return a pure python socket object
 ```
 
 On a macOS workstation this daemon is builtin. On other platforms however you'll need an external tool for that:
@@ -98,22 +100,24 @@ You may query the device information via `lockdownd` using `LockdownClient` from
 ```python
 from pymobiledevice3.lockdown import create_using_usbmux, create_using_tcp
 
-# If we avoid passing the `serial` option, we'll get a `LockdownClient` instance 
-# of the first available device 
-# By default, pymobiledevice3 attempts to pair with the device, if it was not already 
-# paired (presenting a "Trust/Don't Trust" dialog). We use the `autopair=False` when 
-# we don't want to block on that operation
-lockdown = create_using_usbmux(serial='11223344', autopair=False)
 
-# Corellium anyone?
-correlium_lockdown = create_using_usbmux(serial='11223344', autopair=False, usbmux_address='10.11.1.2:5000')
-
-# If the device can be found in our LAN, and we know its address, we simply connect to it
-# Please note the device does not allow pairing over LAN, so we must first pair it over USB
-lockdown = create_using_tcp('192.168.2.7', autopair=False)
-
-# An example for accessing a lockdown attribute
-print(lockdown.product_version)
+async def main() -> None:
+  # If we avoid passing the `serial` option, we'll get a `LockdownClient` instance 
+  # of the first available device 
+  # By default, pymobiledevice3 attempts to pair with the device, if it was not already 
+  # paired (presenting a "Trust/Don't Trust" dialog). We use the `autopair=False` when 
+  # we don't want to block on that operation
+  lockdown = await create_using_usbmux(serial='11223344', autopair=False)
+  
+  # Corellium anyone?
+  correlium_lockdown = await create_using_usbmux(serial='11223344', autopair=False, usbmux_address='10.11.1.2:5000')
+  
+  # If the device can be found in our LAN, and we know its address, we simply connect to it
+  # Please note the device does not allow pairing over LAN, so we must first pair it over USB
+  lockdown = await create_using_tcp('192.168.2.7', autopair=False)
+  
+  # An example for accessing a lockdown attribute
+  print(lockdown.product_version)
 ```
 
 As you may have noticed, we mentioned the iDevice can be interacted over Wi-Fi. For that, we'll need to first enable
@@ -140,8 +144,10 @@ Of course this can also be done in python in asyncio API:
 ```python
 from pymobiledevice3.lockdown import get_mobdev2_lockdowns
 
-async for ip, lockdown in get_mobdev2_lockdowns():
-    print(ip, lockdown.product_version)
+
+async def main() -> None:
+  async for ip, lockdown in get_mobdev2_lockdowns():
+      print(ip, lockdown.product_version)
 ```
 
 However, as long as we don't pair, we can only access a pretty small pool of data. We won't delve into how the pairing
@@ -193,15 +199,17 @@ And of course this is also available from code:
 ```python
 from pymobiledevice3.lockdown import create_using_usbmux
 
-# Create the LockdownClient instance 
-lockdown = create_using_usbmux()
 
-# Get a handle to the service
-service = lockdown.start_lockdown_service(SERVICE_NAME)
-
-# Attempt to send and receive messages from it
-service.sendall(b'hello')
-response = service.recvall(20)
+async def main() -> None:
+  # Create the LockdownClient instance 
+  lockdown = await create_using_usbmux()
+  
+  # Get a handle to the service
+  service = await lockdown.start_lockdown_service(SERVICE_NAME)
+  
+  # Attempt to send and receive messages from it
+  await service.sendall(b'hello')
+  response = await service.recvall(20)
 ```
 
 Many of the services exposed by `lockdownd`, are already implemented in `pymobiledevice3`.
@@ -227,13 +235,15 @@ For example:
 from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.services.os_trace import OsTraceService
 
-lockdown = create_using_usbmux()
 
-# Print all syslog line entries, whereas `OsTraceService` as a wrapper to the 
-# `com.apple.os_trace_relay` lockdown service, and the `syslog` method is a protocol operation
-# for that service
-for entry in OsTraceService(lockdown).syslog():
-    print(entry)
+async def main() -> None:
+  lockdown = await create_using_usbmux()
+  
+  # Print all syslog line entries, whereas `OsTraceService` as a wrapper to the 
+  # `com.apple.os_trace_relay` lockdown service, and the `syslog` method is a protocol operation
+  # for that service
+  async for entry in OsTraceService(lockdown).syslog():
+      print(entry)
 ```
 
 ## DeveloperDiskImage
@@ -259,9 +269,11 @@ As any other lockdown service, this of course can be accessed from python API:
 from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.services.amfi import AmfiService
 
-lockdown = create_using_usbmux()
-amfi = AmfiService(lockdown)
-amfi.enable_developer_mode()
+
+async def main() -> None:
+  lockdown = await create_using_usbmux()
+  amfi = AmfiService(lockdown)
+  await amfi.enable_developer_mode()
 ```
 
 Once the DeveloperMode is on, we can mount the DDI. This however has very much changed in many aspects in iOS 17. For
@@ -276,7 +288,7 @@ pymobiledevice3 mounter auto-mount
 Once this is done, you may access a much wider variety of features in the device, such as process management, debugging,
 simulate locations and much more.
 
-In order to make it clear which of `pymobiledevice3` commands require the DeveloperMode to be on together with the DDI
+To make it clear which of `pymobiledevice3` commands require the DeveloperMode to be on together with the DDI
 being mounted, we put it all in the `developer` subcommand.
 
 For example:
@@ -287,43 +299,48 @@ pymobiledevice3 developer dvt launch com.apple.mobilesafari
 
 ## DVT
 
-One of the more interesting developer services, is the one exposed by `DTServiceHub`. It is using DTX protocol messages,
+One of the more interesting developer services is the one exposed by `DTServiceHub`. It is using DTX protocol messages,
 but since it mainly wraps and allows access to stuff in `DVTFoundation.framework` we called it DVT in our
 implementation (probably standing for DeveloperTools).
 
 We don't delve too much into this protocol, but we'll say in general it allows us to invoke a whitelist of ObjC methods
 in different ObjC objects. The terminology used by DVT to each such ObjC object is called "channels".
 
-In order to access this different object use the following APIs:
+To access this different object use the following APIs:
 
 ```python
 from pymobiledevice3.lockdown import create_using_usbmux
-from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
+from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
 from pymobiledevice3.services.dvt.instruments.screenshot import Screenshot
 
-# Create a LockdownClient instance
-lockdown = create_using_usbmux()
 
-# Use it to create a DVT instance
-dvt = DvtSecureSocketProxyService(lockdown)
-dvt.perform_handshake()
+async def main() -> None:
+  # Create a LockdownClient instance
+  lockdown = await create_using_usbmux()
 
-# Use it to invoke methods on a DVT channel
-dvt_channel = Screenshot(dvt)
-open('/tmp/screen.png', 'wb').write(dvt_channel.get_screenshot())
+  # Use it to create a DVT provider (DTX lifecycle is handled automatically)
+  async with DvtProvider(lockdown) as dvt:
+    # Use it to invoke methods on a DVT channel
+    dvt_channel = Screenshot(dvt)
+    open('/tmp/screen.png', 'wb').write(await dvt_channel.get_screenshot())
 ```
 
-Looking for an unimplemented feature/channel? Feel free to play with it (and submit a PR afterwards 🙏) using the
+Looking for an unimplemented feature/channel? Feel free to play with it (and submit a PR afterward 🙏) using the
 following shell:
 
 ```shell
 pymobiledevice3 developer dvt shell
 ```
 
+> **NOTE:** The full list of the methods that can be invoked on a DVT channel can be found by looking at all ObjC
+> classes in `DVTInstrumentsFoundation.framework` implementing the `DTXAllowedRPC` protocol.
+> There is an existing [Anubis rule](https://github.com/netanelc305/anubis/blob/9da337178ebd7e9f168e9df2d82b192eba4f1b30/example_rules.yaml#L14-L17)
+> I use to diff new methods against the existing ones.
+
 ## RemoteXPC
 
 Starting at iOS 17.0, Apple made a large refactor in the manner we all interact with the developer services. There can
-be multiple reasons for that decision, but in general this refactor main key points are:
+be multiple reasons for that decision, but in general these refactor main key points are:
 
 - Create a single standard for interacting with the new lockdown services (XPC Messages, Apple's proprietary IPC)
 - Optimize the protocol for large file transfers (such as the dyld_shared_cache)
@@ -347,7 +364,7 @@ Since all this communication is IP-based, but without any additional exported TC
 help us here. Instead, starting at iOS 16.0, when connecting an iDevice, it exports another non-standard USB-Ethernet
 adapter (with IPv6 link-local address), placing us in a subnet with the device's `remoted`.
 
-As we've said this communication is non-standard, and requires either:
+As we've said, this communication is non-standard and requires either:
 
 - macOS Monterey or higher
 - Special driver on your linux/Windows machine
@@ -436,16 +453,18 @@ This is of course also available via a python API:
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.services.os_trace import OsTraceService
 
-# Assuming 
-host = 'fdc3:16b1:5cac::1'
-port = 52954
-rsd = RemoteServiceDiscoveryService((host, port))
-await rsd.connect()
 
-# Both LockdownClient and RemoteServiceDiscoveryService implement LockdownServiceProvider, 
-# meaning you can simply use this instance as any other LockdownClient instance
-for entry in OsTraceService(rsd).syslog():
-    print(entry)
+async def main() -> None:
+  # Assuming 
+  host = 'fdc3:16b1:5cac::1'
+  port = 52954
+  rsd = RemoteServiceDiscoveryService((host, port))
+  await rsd.connect()
+  
+  # Both LockdownClient and RemoteServiceDiscoveryService implement LockdownServiceProvider, 
+  # meaning you can simply use this instance as any other LockdownClient instance
+  async for entry in OsTraceService(rsd).syslog():
+      print(entry)
 ```
 
 Confused by all these "start-tunnel" permutations? Don't blame yourself - it's very confusing especially since there
@@ -475,14 +494,16 @@ pymobiledevice3 developer dvt launch com.apple.mobilesafari --tunnel '11223344'
 This is of course also available via a python API:
 
 ```python
-from pymobiledevice3.tunneld.api import async_get_tunneld_devices
+from pymobiledevice3.tunneld.api import get_tunneld_devices
 from pymobiledevice3.services.os_trace import OsTraceService
 
-rsds = await async_get_tunneld_devices()
 
-# We can now simply use the returned list of RSDs as any other LockdownClients
-for entry in OsTraceService(rsds[0]).syslog():
-    print(entry)
+async def main() -> None:
+  rsds = await get_tunneld_devices()
+  
+  # We can now simply use the returned list of RSDs as any other LockdownClients
+  async for entry in OsTraceService(rsds[0]).syslog():
+      print(entry)
 ```
 
 ## Other python service examples

@@ -1,22 +1,44 @@
-from pymobiledevice3.services.remote_server import MessageAux
+import asyncio
+import typing
+from typing import Any
+
+from pymobiledevice3.dtx import ConnectionAwareQueue, DTXService, dtx_method, dtx_on_dispatch, dtx_on_notification
+from pymobiledevice3.dtx_service import DtxService
 
 
-class Notifications:
-    IDENTIFIER = 'com.apple.instruments.server.services.mobilenotifications'
+class NotificationsService(DTXService):
+    IDENTIFIER = "com.apple.instruments.server.services.mobilenotifications"
 
-    def __init__(self, dvt):
-        self._dvt = dvt
-        self._channel = dvt.make_channel(self.IDENTIFIER)
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self.events: asyncio.Queue[Any] = ConnectionAwareQueue()
 
-    def __enter__(self):
-        self._channel.setApplicationStateNotificationsEnabled_(MessageAux().append_obj(True))
-        self._channel.setMemoryNotificationsEnabled_(MessageAux().append_obj(True))
+    @dtx_method("setApplicationStateNotificationsEnabled:", expects_reply=False)
+    async def set_application_state_notifications_enabled_(self, enabled: bool) -> None: ...
+
+    @dtx_method("setMemoryNotificationsEnabled:", expects_reply=False)
+    async def set_memory_notifications_enabled_(self, enabled: bool) -> None: ...
+
+    @dtx_on_dispatch
+    async def _on_dispatch(self, selector: str, *args: Any) -> None:
+        await self.events.put((selector, list(args)))
+
+    @dtx_on_notification
+    async def _on_notification(self, payload: Any) -> None:
+        await self.events.put(payload)
+
+
+class Notifications(DtxService[NotificationsService]):
+    async def __aenter__(self):
+        await self.connect()
+        await self.service.set_application_state_notifications_enabled_(True)
+        await self.service.set_memory_notifications_enabled_(True)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self._channel.setApplicationStateNotificationsEnabled_(MessageAux().append_obj(False))
-        self._channel.setMemoryNotificationsEnabled_(MessageAux().append_obj(False))
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.service.set_application_state_notifications_enabled_(False)
+        await self.service.set_memory_notifications_enabled_(False)
 
-    def __iter__(self):
+    async def __aiter__(self) -> typing.AsyncGenerator[Any, None]:
         while True:
-            yield self._dvt.recv_plist(self._channel)
+            yield await self.service.events.get()
