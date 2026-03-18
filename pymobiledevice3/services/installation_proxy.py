@@ -301,12 +301,8 @@ class InstallationProxyService(LockdownService):
         options["ApplicationType"] = application_type
         result = self.lookup(options)
         if calculate_sizes:
-            additional_info = self.lookup(GET_APPS_ADDITIONAL_INFO)
+            options.update(GET_APPS_ADDITIONAL_INFO)
+            additional_info = self.lookup(options)
             for bundle_identifier, app in additional_info.items():
                 result[bundle_identifier].update(app)
-        # filter results
-        filtered_result = {}
-        for bundle_identifier, app in result.items():
-            if (app_types is None) or (app['ApplicationType'] in app_types):
-                filtered_result[bundle_identifier] = app
-        return filtered_result
+        return result
