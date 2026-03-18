@@ -6,69 +6,43 @@ import os
 import sys
 import uuid
 from functools import wraps
-from typing import Any, Callable, Optional
+from textwrap import dedent
+from typing import Annotated, Any, Callable, Optional
 
 import click
 import coloredlogs
 import hexdump
 import inquirer3
-from click import Option, UsageError
+import typer
+from click import UsageError
 from inquirer3.themes import GreenPassion
 from pygments import formatters, highlight, lexers
+from typer_injector import Depends
 
 from pymobiledevice3.exceptions import AccessDeniedError, DeviceNotFoundError, NoDeviceConnectedError
-from pymobiledevice3.lockdown import LockdownClient, create_using_usbmux
+from pymobiledevice3.lockdown import TcpLockdownClient, create_using_usbmux, get_mobdev2_lockdowns
+from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.osu.os_utils import get_os_utils
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.tunneld.api import TUNNELD_DEFAULT_ADDRESS, async_get_tunneld_devices
 from pymobiledevice3.usbmux import select_devices_by_connection_type
 
-COLORED_OUTPUT = True
-UDID_ENV_VAR = 'PYMOBILEDEVICE3_UDID'
-TUNNEL_ENV_VAR = 'PYMOBILEDEVICE3_TUNNEL'
-USBMUX_ENV_VAR = 'PYMOBILEDEVICE3_USBMUX'
+UDID_ENV_VAR = "PYMOBILEDEVICE3_UDID"
+TUNNEL_ENV_VAR = "PYMOBILEDEVICE3_TUNNEL"
+USBMUX_ENV_VAR = "PYMOBILEDEVICE3_USBMUX"
+USBMUX_OPTION_HELP = (
+    "Address of the usbmuxd daemon (unix socket path or HOST:PORT). Defaults to the platform usbmuxd if omitted."
+)
+DEVICE_OPTIONS_PANEL_TITLE = "Device Options"
 OSUTILS = get_os_utils()
 
-USBMUX_OPTION_HELP = (f'usbmuxd listener address (in the form of either /path/to/unix/socket OR HOST:PORT). '
-                      f'Can be specified via {USBMUX_ENV_VAR} envvar')
-
-
-class RSDOption(Option):
-    def __init__(self, *args, **kwargs):
-        self.mutually_exclusive = set(kwargs.pop('mutually_exclusive', []))
-        help = kwargs.get('help', '')
-        if self.mutually_exclusive:
-            ex_str = ', '.join(self.mutually_exclusive)
-            kwargs['help'] = help + (
-                    '\nNOTE: This argument is mutually exclusive with '
-                    ' arguments: [' + ex_str + '].'
-            )
-        super().__init__(*args, **kwargs)
-
-    def handle_parse_result(self, ctx, opts, args):
-        if (isinstance(ctx.command, RSDCommand) and not (isinstance(ctx.command, Command)) and
-                ('rsd_service_provider_using_tunneld' not in opts) and ('rsd_service_provider_manually' not in opts)):
-            # defaulting to `--tunnel ''` if no remote option was specified
-            opts['rsd_service_provider_using_tunneld'] = ''
-        if self.mutually_exclusive.intersection(opts) and self.name in opts:
-            raise UsageError(
-                'Illegal usage: `{}` is mutually exclusive with '
-                'arguments `{}`.'.format(
-                    self.name,
-                    ', '.join(self.mutually_exclusive)
-                )
-            )
-
-        return super().handle_parse_result(
-            ctx,
-            opts,
-            args
-        )
+# Global options
+COLORED_OUTPUT: bool = True
 
 
 def default_json_encoder(obj):
     if isinstance(obj, bytes):
-        return f'<{obj.hex()}>'
+        return f"<{obj.hex()}>"
     if isinstance(obj, datetime.datetime):
         return str(obj)
     if isinstance(obj, uuid.UUID):
@@ -76,13 +50,14 @@ def default_json_encoder(obj):
     raise TypeError()
 
 
-def print_json(buf, colored: Optional[bool] = None, default=default_json_encoder):
+def print_json(buf, colored: Optional[bool] = None, default=default_json_encoder) -> str:
     if colored is None:
         colored = user_requested_colored_output()
     formatted_json = json.dumps(buf, sort_keys=True, indent=4, default=default)
     if colored and os.isatty(sys.stdout.fileno()):
-        colorful_json = highlight(formatted_json, lexers.JsonLexer(),
-                                  formatters.Terminal256Formatter(style='stata-dark'))
+        colorful_json = highlight(
+            formatted_json, lexers.JsonLexer(), formatters.Terminal256Formatter(style="stata-dark")
+        )
         print(colorful_json)
         return colorful_json
     else:
@@ -90,19 +65,19 @@ def print_json(buf, colored: Optional[bool] = None, default=default_json_encoder
         return formatted_json
 
 
-def print_hex(data, colored=True):
-    hex_dump = hexdump.hexdump(data, result='return')
+def print_hex(data, colored=True) -> None:
+    hex_dump = hexdump.hexdump(data, result="return")
     if colored:
-        print(highlight(hex_dump, lexers.HexdumpLexer(), formatters.Terminal256Formatter(style='native')))
+        print(highlight(hex_dump, lexers.HexdumpLexer(), formatters.Terminal256Formatter(style="native")))
     else:
-        print(hex_dump, end='\n\n')
+        print(hex_dump, end="\n\n")
 
 
-def set_verbosity(ctx, param, value):
-    coloredlogs.set_level(logging.INFO - (value * 10))
+def set_verbosity(level: int) -> None:
+    coloredlogs.set_level(logging.INFO - (level * 10))
 
 
-def set_color_flag(ctx, param, value) -> None:
+def set_color_flag(value: bool) -> None:
     global COLORED_OUTPUT
     COLORED_OUTPUT = value
 
@@ -116,7 +91,7 @@ def user_requested_colored_output() -> bool:
 
 
 def get_last_used_terminal_formatting(buf: str) -> str:
-    return '\x1b' + buf.rsplit('\x1b', 1)[1].split('m')[0] + 'm'
+    return "\x1b" + buf.rsplit("\x1b", 1)[1].split("m")[0] + "m"
 
 
 def sudo_required(func):
@@ -131,178 +106,204 @@ def sudo_required(func):
 
 
 def prompt_selection(choices: list[Any], message: str, idx: bool = False) -> Any:
-    question = [inquirer3.List('selection', message=message, choices=choices, carousel=True)]
+    question = [inquirer3.List("selection", message=message, choices=choices, carousel=True)]
     try:
         result = inquirer3.prompt(question, theme=GreenPassion(), raise_keyboard_interrupt=True)
     except KeyboardInterrupt:
-        raise click.ClickException('No selection was made')
-    return result['selection'] if not idx else choices.index(result['selection'])
+        raise click.ClickException("No selection was made") from None
+    return result["selection"] if not idx else choices.index(result["selection"])
 
 
 def prompt_device_list(device_list: list):
-    return prompt_selection(device_list, 'Choose device')
-
-
-def choose_service_provider(callback: Callable):
-    def wrap_callback_calling(**kwargs: dict) -> None:
-        service_provider = None
-        lockdown_service_provider = kwargs.pop('lockdown_service_provider', None)
-        rsd_service_provider_manually = kwargs.pop('rsd_service_provider_manually', None)
-        rsd_service_provider_using_tunneld = kwargs.pop('rsd_service_provider_using_tunneld', None)
-        if lockdown_service_provider is not None:
-            service_provider = lockdown_service_provider
-        if rsd_service_provider_manually is not None:
-            service_provider = rsd_service_provider_manually
-        if rsd_service_provider_using_tunneld is not None:
-            service_provider = rsd_service_provider_using_tunneld
-        callback(service_provider=service_provider, **kwargs)
-
-    return wrap_callback_calling
+    return prompt_selection(device_list, "Choose device")
 
 
 def is_invoked_for_completion() -> bool:
-    """ Returns True if the command is ivoked for autocompletion. """
-    for env in os.environ.keys():
-        if env.startswith('_') and env.endswith('_COMPLETE'):
-            return True
-    return False
+    """Returns True if the command is invoked for autocompletion."""
+    return any(env.startswith("_") and env.endswith("_COMPLETE") for env in os.environ)
 
 
-class BaseCommand(click.Command):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.params[:0] = [
-            click.Option(('verbosity', '-v', '--verbose'), count=True, callback=set_verbosity, expose_value=False),
-            click.Option(('color', '--color/--no-color'), default=True, callback=set_color_flag, is_flag=True,
-                         expose_value=False, help='colorize output'),
-        ]
+async def get_mobdev2_devices(udid: Optional[str] = None) -> list[TcpLockdownClient]:
+    return [lockdown async for _, lockdown in get_mobdev2_lockdowns(udid=udid)]
 
 
-class BaseServiceProviderCommand(BaseCommand):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.service_provider = None
-        self.callback = choose_service_provider(self.callback)
+async def _tunneld(udid: Optional[str] = None) -> Optional[RemoteServiceDiscoveryService]:
+    if udid is None:
+        return
+
+    udid = udid.strip()
+    port = TUNNELD_DEFAULT_ADDRESS[1]
+    if ":" in udid:
+        udid, port = udid.split(":")
+
+    rsds = await async_get_tunneld_devices((TUNNELD_DEFAULT_ADDRESS[0], int(port)))
+    if len(rsds) == 0:
+        raise NoDeviceConnectedError()
+
+    if udid != "":
+        service_provider = next((rsd for rsd in rsds if rsd.udid == udid), None)
+        if service_provider is None:
+            raise DeviceNotFoundError(udid) from None
+    else:
+        service_provider = rsds[0] if len(rsds) == 1 else prompt_device_list(rsds)
+
+    for rsd in rsds:
+        if rsd == service_provider:
+            continue
+        await rsd.close()
+
+    return service_provider
 
 
-class LockdownCommand(BaseServiceProviderCommand):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.usbmux_address = None
-        self.params[:0] = [
-            click.Option(('usbmux', '--usbmux'), callback=self.usbmux, expose_value=False,
-                         envvar=USBMUX_ENV_VAR, help=USBMUX_OPTION_HELP),
-            click.Option(('lockdown_service_provider', '--udid'), envvar=UDID_ENV_VAR, callback=self.udid,
-                         help=f'Device unique identifier. You may pass {UDID_ENV_VAR} environment variable to pass this'
-                              f' option as well'),
-        ]
-
-    def usbmux(self, ctx, param: str, value: Optional[str] = None) -> None:
-        if value is None:
-            return
-        self.usbmux_address = value
-
-    def udid(self, ctx, param: str, value: str) -> Optional[LockdownClient]:
+def make_rsd_dependency(*, allow_none: bool) -> Callable[..., Optional[RemoteServiceDiscoveryService]]:
+    def rsd_dependency(
+        rsd: Annotated[
+            Optional[tuple[str, int]],
+            typer.Option(
+                metavar="HOST PORT",
+                help=dedent("""\
+                    Hostname and port of a RemoteServiceDiscovery (from any of the `start-tunnel` subcommands).
+                    Mutually exclusive with --tunnel.
+                """),
+                rich_help_panel=DEVICE_OPTIONS_PANEL_TITLE,
+            ),
+        ] = None,
+        tunnel: Annotated[
+            Optional[str],
+            typer.Option(
+                envvar=TUNNEL_ENV_VAR,
+                help=dedent("""\
+                    Use a device discovered via tunneld. Provide a UDID (optionally with :PORT) or leave empty to pick
+                    interactively. Mutually exclusive with --rsd.
+                """),
+                rich_help_panel=DEVICE_OPTIONS_PANEL_TITLE,
+            ),
+        ] = None,
+    ) -> Optional[RemoteServiceDiscoveryService]:
         if is_invoked_for_completion():
             # prevent lockdown connection establishment when in autocomplete mode
-            return
+            return None
 
-        if self.service_provider is not None:
-            return self.service_provider
+        if rsd is not None and tunnel is not None:
+            raise UsageError("Illegal usage: --rsd is mutually exclusive with --tunnel.")
 
-        if value is not None:
-            return create_using_usbmux(serial=value)
+        if rsd is not None:
+            rsd_service = RemoteServiceDiscoveryService(rsd)
+            asyncio.run(rsd_service.connect(), debug=True)
+            return rsd_service
 
-        devices = select_devices_by_connection_type(connection_type='USB', usbmux_address=self.usbmux_address)
-        if len(devices) <= 1:
-            return create_using_usbmux(usbmux_address=self.usbmux_address)
+        if tunnel is not None or not allow_none:
+            return asyncio.run(_tunneld(tunnel or ""), debug=True)
 
-        return prompt_device_list(
-            [create_using_usbmux(serial=device.serial, usbmux_address=self.usbmux_address) for device in devices])
+    return rsd_dependency
 
 
-class RSDCommand(BaseServiceProviderCommand):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.params[:0] = [
-            RSDOption(('rsd_service_provider_manually', '--rsd'), type=(str, int), callback=self.rsd,
-                      mutually_exclusive=['rsd_service_provider_using_tunneld'],
-                      help='\b\n'
-                           'RSD hostname and port number (as provided by a `start-tunnel` subcommand).'),
-            RSDOption(('rsd_service_provider_using_tunneld', '--tunnel'), callback=self.tunneld,
-                      mutually_exclusive=['rsd_service_provider_manually'], envvar=TUNNEL_ENV_VAR,
-                      help='\b\n'
-                           'Either an empty string to force tunneld device selection, or a UDID of a tunneld '
-                           'discovered device.\n'
-                           'The string may be suffixed with :PORT in case tunneld is not serving at the default port.\n'
-                           f'This option may also be transferred as an environment variable: {TUNNEL_ENV_VAR}')
-        ]
+def any_service_provider_dependency(
+    rsd_service_provider: Annotated[
+        Optional[RemoteServiceDiscoveryService],
+        Depends(make_rsd_dependency(allow_none=True)),
+    ] = None,
+    mobdev2: Annotated[
+        bool,
+        typer.Option(
+            help="Discover devices over bonjour/mobdev2 instead of usbmux.",
+            rich_help_panel=DEVICE_OPTIONS_PANEL_TITLE,
+        ),
+    ] = False,
+    usbmux: Annotated[
+        Optional[str],
+        typer.Option(
+            envvar=USBMUX_ENV_VAR,
+            help=USBMUX_OPTION_HELP,
+            rich_help_panel=DEVICE_OPTIONS_PANEL_TITLE,
+        ),
+    ] = None,
+    udid: Annotated[
+        Optional[str],
+        typer.Option(
+            envvar=UDID_ENV_VAR,
+            help="Target device UDID (defaults to the first USB device).",
+            rich_help_panel=DEVICE_OPTIONS_PANEL_TITLE,
+        ),
+    ] = None,
+) -> LockdownServiceProvider:
+    if is_invoked_for_completion():
+        # prevent lockdown connection establishment when in autocomplete mode
+        return  # type: ignore[return-value]
 
-    def rsd(self, ctx, param: str, value: Optional[tuple[str, int]]) -> Optional[RemoteServiceDiscoveryService]:
-        if value is not None:
-            rsd = RemoteServiceDiscoveryService(value)
-            asyncio.run(rsd.connect(), debug=True)
-            self.service_provider = rsd
-            return self.service_provider
+    if rsd_service_provider is not None:
+        return rsd_service_provider
 
-    async def _tunneld(self, udid: Optional[str] = None) -> Optional[RemoteServiceDiscoveryService]:
-        if udid is None:
-            return
-
-        udid = udid.strip()
-        port = TUNNELD_DEFAULT_ADDRESS[1]
-        if ':' in udid:
-            udid, port = udid.split(':')
-
-        rsds = await async_get_tunneld_devices((TUNNELD_DEFAULT_ADDRESS[0], port))
-        if len(rsds) == 0:
+    if mobdev2:
+        devices = asyncio.run(get_mobdev2_devices(udid=udid))
+        if not devices:
             raise NoDeviceConnectedError()
 
-        if udid != '':
-            try:
-                # Connect to the specified device
-                self.service_provider = [rsd for rsd in rsds if rsd.udid == udid][0]
-            except IndexError:
-                raise DeviceNotFoundError(udid)
-        else:
-            if len(rsds) == 1:
-                self.service_provider = rsds[0]
-            else:
-                self.service_provider = prompt_device_list(rsds)
+        if len(devices) == 1:
+            return devices[0]
 
-        for rsd in rsds:
-            if rsd == self.service_provider:
-                continue
-            await rsd.close()
+        return prompt_device_list(devices)
 
-        return self.service_provider
+    if udid is not None:
+        return create_using_usbmux(serial=udid, usbmux_address=usbmux)
 
-    def tunneld(self, ctx, param: str, udid: Optional[str] = None) -> Optional[RemoteServiceDiscoveryService]:
-        return asyncio.run(self._tunneld(udid), debug=True)
+    devices = select_devices_by_connection_type(connection_type="USB", usbmux_address=usbmux)
+    if len(devices) <= 1:
+        return create_using_usbmux(usbmux_address=usbmux)
+
+    return prompt_device_list([create_using_usbmux(serial=device.serial, usbmux_address=usbmux) for device in devices])
 
 
-class Command(RSDCommand, LockdownCommand):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+def no_autopair_service_provider_dependency(
+    rsd_service_provider: Annotated[
+        Optional[RemoteServiceDiscoveryService],
+        Depends(make_rsd_dependency(allow_none=True)),
+    ] = None,
+    udid: Annotated[
+        Optional[str],
+        typer.Option(
+            envvar=UDID_ENV_VAR,
+            help="Target device UDID (defaults to the first USB device).",
+            rich_help_panel=DEVICE_OPTIONS_PANEL_TITLE,
+        ),
+    ] = None,
+) -> LockdownServiceProvider:
+    if is_invoked_for_completion():
+        # prevent lockdown connection establishment when in autocomplete mode
+        return  # type: ignore[return-value]
+
+    if rsd_service_provider is not None:
+        return rsd_service_provider
+
+    return create_using_usbmux(serial=udid, autopair=False)
 
 
-class CommandWithoutAutopair(Command):
-    @staticmethod
-    def udid(ctx, param, value):
-        if is_invoked_for_completion():
-            # prevent lockdown connection establishment when in autocomplete mode
-            return
-        return create_using_usbmux(serial=value, autopair=False)
+RSDServiceProviderDep = Annotated[
+    RemoteServiceDiscoveryService,
+    Depends(make_rsd_dependency(allow_none=False)),
+]
+
+
+ServiceProviderDep = Annotated[
+    LockdownServiceProvider,
+    Depends(any_service_provider_dependency),
+]
+
+
+NoAutoPairServiceProviderDep = Annotated[
+    LockdownServiceProvider,
+    Depends(no_autopair_service_provider_dependency),
+]
 
 
 class BasedIntParamType(click.ParamType):
-    name = 'based int'
+    name = "based int"
 
     def convert(self, value, param, ctx):
         try:
             return int(value, 0)
         except ValueError:
-            self.fail(f'{value!r} is not a valid int.', param, ctx)
+            self.fail(f"{value!r} is not a valid int.", param, ctx)
 
 
 BASED_INT = BasedIntParamType()

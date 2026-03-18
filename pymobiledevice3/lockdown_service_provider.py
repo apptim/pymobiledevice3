@@ -19,6 +19,11 @@ class LockdownServiceProvider:
 
     @property
     @abstractmethod
+    def product_build_version(self) -> str:
+        pass
+
+    @property
+    @abstractmethod
     def ecid(self) -> int:
         pass
 
@@ -41,21 +46,19 @@ class LockdownServiceProvider:
         pass
 
     @abstractmethod
-    async def aio_start_lockdown_service(
-            self, name: str, include_escrow_bag: bool = False) -> ServiceConnection:
+    async def aio_start_lockdown_service(self, name: str, include_escrow_bag: bool = False) -> ServiceConnection:
         pass
 
     @abstractmethod
     def get_value(self, domain: Optional[str] = None, key: Optional[str] = None) -> Any:
         pass
 
-    def start_lockdown_developer_service(
-            self, name: str, include_escrow_bag: bool = False) -> ServiceConnection:
+    def start_lockdown_developer_service(self, name: str, include_escrow_bag: bool = False) -> ServiceConnection:
         try:
             return self.start_lockdown_service(name, include_escrow_bag=include_escrow_bag)
         except StartServiceError:
-            logging.getLogger(self.__module__).error(
-                'Failed to connect to required service. Make sure DeveloperDiskImage.dmg has been mounted. '
-                'You can do so using: pymobiledevice3 mounter mount'
+            logging.getLogger(self.__module__).exception(
+                "Failed to connect to required service. Make sure DeveloperDiskImage.dmg has been mounted. "
+                "You can do so using: pymobiledevice3 mounter mount"
             )
             raise

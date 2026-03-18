@@ -3,13 +3,16 @@ import asyncio
 import pytest
 
 from pymobiledevice3.remote.common import ConnectionType
-from pymobiledevice3.remote.tunnel_service import get_core_device_tunnel_services, get_remote_pairing_tunnel_services, \
-    start_tunnel
+from pymobiledevice3.remote.tunnel_service import (
+    get_core_device_tunnel_services,
+    get_remote_pairing_tunnel_services,
+    start_tunnel,
+)
 
 
-@pytest.mark.parametrize('connection_type', [ConnectionType.USB, ConnectionType.WIFI])
+@pytest.mark.parametrize("connection_type", [ConnectionType.USB, ConnectionType.WIFI])
 @pytest.mark.asyncio
-async def test_start_tunnel(connection_type: ConnectionType):
+async def test_start_tunnel(connection_type: ConnectionType) -> None:
     get_tunnel_services = {
         connection_type.USB: get_core_device_tunnel_services,
         connection_type.WIFI: get_remote_pairing_tunnel_services,
