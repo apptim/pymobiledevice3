@@ -4,7 +4,7 @@ from enum import Enum
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Callable, Optional, List, Mapping
+from typing import Callable, Mapping, Optional
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from parameter_decorators import str_to_path
@@ -287,7 +287,7 @@ class InstallationProxyService(LockdownService):
         cmd = {"Command": "Lookup", "ClientOptions": options}
         return self.service.send_recv_plist(cmd).get("LookupResult")
 
-    def get_apps(self, app_types: List[str] = None, calculate_sizes: bool = False) -> Mapping[str, Mapping]:
+    def get_apps(self, app_types: Optional[list[str]] = None, calculate_sizes: bool = False) -> Mapping[str, Mapping]:
         """ get applications according to given criteria """
         result = self.lookup()
         if calculate_sizes:

@@ -321,7 +321,10 @@ class PersonalizedImageMounter(MobileImageMounterService):
 
 
 def auto_mount_developer(
-    lockdown: LockdownServiceProvider, xcode: Optional[str] = None, version: Optional[str] = None
+    lockdown: LockdownServiceProvider,
+    xcode: Optional[str] = None,
+    version: Optional[str] = None,
+    custom_path: Optional[str] = None,
 ) -> None:
     """auto-detect correct DeveloperDiskImage and mount it"""
     if xcode is None:
@@ -354,20 +357,16 @@ def auto_mount_developer(
         if developer_disk_image is None:
             raise DeveloperDiskImageNotFoundError()
 
-        """
-            Try to write it to Xcode folder, 
-            if it fails due to permissions, write it to the custom path
-        """
         try:
             developer_disk_image_dir.mkdir(exist_ok=True, parents=True)
-        except PermissionError as e:
+        except PermissionError:
             if custom_path:
                 developer_disk_image_dir = Path(custom_path) / f'{version}'
                 image_path = developer_disk_image_dir / 'DeveloperDiskImage.dmg'
                 signature = image_path.with_suffix('.signature')
                 developer_disk_image_dir.mkdir(exist_ok=True, parents=True)
             else:
-                raise e
+                raise
 
         image_path.write_bytes(developer_disk_image.image)
         signature.write_bytes(developer_disk_image.signature)

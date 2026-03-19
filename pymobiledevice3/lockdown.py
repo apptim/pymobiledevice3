@@ -456,6 +456,23 @@ class LockdownClient(ABC, LockdownServiceProvider):
 
     @_reconnect_on_remote_close
     def pair_supervised(self, keybag_file: Path, timeout: Optional[float] = None) -> None:
+        """
+        Performs a supervised pairing process with a device using the provided
+        keybag file and optionally a timeout. The method manages the creation
+        of certificates and keys, sends pairing requests, handles challenges
+        during the pairing process, and finalizes the pairing record upon
+        success.
+
+        :param keybag_file: The path to the file containing the keybag used for the
+            supervised pairing process.
+        :type keybag_file: Path
+        :param timeout: Optional timeout value in seconds for the pairing requests.
+            Default is None.
+        :type timeout: Optional[float]
+        :return: None
+        :raises PairingError: Raised when the device public key cannot be retrieved
+            or in case of a failure during the pairing process.
+        """
         with open(keybag_file, "rb") as keybag_file:
             keybag_file = keybag_file.read()
         private_key = serialization.load_pem_private_key(keybag_file, password=None)
@@ -470,7 +487,8 @@ class LockdownClient(ABC, LockdownServiceProvider):
 
         self.logger.info("Creating host key & certificate")
         host_cert_pem, host_key_pem, device_cert_pem, root_cert_pem, root_key_pem = generate_pairing_cert_chain(
-            self.device_public_key, private_key=private_key
+            self.device_public_key
+            # TODO: consider parsing product_version to support iOS < 4
         )
 
         pair_record = {
@@ -507,74 +525,6 @@ class LockdownClient(ABC, LockdownServiceProvider):
                     "PairingOptions": {"ChallengeResponse": signed_response, "ExtendedPairingErrors": True},
                 }
                 # second pair with Response to Challenge
-                pair = self._request_pair(pair_options, timeout=timeout)
-
-        pair_record["HostPrivateKey"] = host_key_pem
-        escrow_bag = pair.get("EscrowBag")
-
-        if escrow_bag is not None:
-            pair_record["EscrowBag"] = pair.get("EscrowBag")
-
-        self.pair_record = pair_record
-        self.save_pair_record()
-        self.paired = True
-
-    @_reconnect_on_remote_close
-    def pair_supervised(self, timeout: float = None, p12file: Path = None, password: str = None) -> None:
-        keystore_data = p12file.read()
-        try:
-            decrypted_p12 = load_pkcs12(keystore_data, password.encode("utf-8"))
-        except Exception as pkcs12_error:
-            self.service.close()
-            raise Exception(f"load_pkcs12 error: {pkcs12_error}")
-
-        self.device_public_key = self.get_value("", "DevicePublicKey")
-        if not self.device_public_key:
-            self.logger.error("Unable to retrieve DevicePublicKey")
-            self.service.close()
-            raise PairingError()
-
-        self.logger.info("Creating host key & certificate")
-        host_cert_pem, host_key_pem, device_cert_pem, root_cert_pem, root_key_pem = generate_pairing_cert_chain(
-            self.device_public_key
-        )
-
-        pair_record = {
-            "DevicePublicKey": self.device_public_key,
-            "DeviceCertificate": device_cert_pem,
-            "HostCertificate": host_cert_pem,
-            "HostID": self.host_id,
-            "RootCertificate": root_cert_pem,
-            "RootPrivateKey": root_key_pem,
-            "WiFiMACAddress": self.wifi_mac_address,
-            "SystemBUID": self.system_buid,
-        }
-
-        pair_options = {
-            "PairRecord": pair_record,
-            "ProtocolVersion": "2",
-            "PairingOptions": {
-                "SupervisorCertificate": decrypted_p12.cert.certificate.public_bytes(Encoding.DER),
-                "ExtendedPairingErrors": True,
-            },
-        }
-
-        pair = self._request_pair(pair_options, timeout=timeout)
-        if pair.get("Error") == "MCChallengeRequired":
-            extended_response = pair.get("ExtendedResponse")
-            if extended_response is not None:
-                pairing_challenge = extended_response.get("PairingChallenge")
-                signed_response = (
-                    PKCS7SignatureBuilder()
-                    .set_data(pairing_challenge)
-                    .add_signer(decrypted_p12.cert.certificate, decrypted_p12.key, hashes.SHA256())
-                    .sign(Encoding.DER, [])
-                )
-                pair_options = {
-                    "PairRecord": pair_record,
-                    "ProtocolVersion": "2",
-                    "PairingOptions": {"ChallengeResponse": signed_response, "ExtendedPairingErrors": True},
-                }
                 pair = self._request_pair(pair_options, timeout=timeout)
 
         pair_record["HostPrivateKey"] = host_key_pem

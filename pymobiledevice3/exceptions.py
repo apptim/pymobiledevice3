@@ -317,10 +317,6 @@ class SetProhibitedError(LockdownError):
     pass
 
 
-class GetProhibitedError(LockdownError):
-    pass
-
-
 class PairingDialogResponsePendingError(PairingError):
     """User hasn't yet confirmed the device is trusted"""
 

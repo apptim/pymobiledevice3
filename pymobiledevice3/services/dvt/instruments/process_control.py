@@ -104,7 +104,7 @@ class ProcessControl:
         except DvtException as exc:
             error = exc.args[0]["NSLocalizedFailureReason"]
             if "the device was not, or could not be, unlocked" in error:
-                raise DeviceLockedError()
+                raise DeviceLockedError() from exc
             raise
         assert result
         return result
