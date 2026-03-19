@@ -165,16 +165,18 @@ async def tunnel_task(
             print(f"{tunnel_result.address} {tunnel_result.port}", flush=True)
             if tunnels_addresses_file:
                 if os.path.exists(tunnels_addresses_file):
-                    with open(tunnels_addresses_file, "r") as json_file:
+                    with open(tunnels_addresses_file) as json_file:
                         existing_data = json.load(json_file)
                 else:
                     existing_data = []
 
-                new_data = [{
-                    "address": tunnel_result.address,
-                    "port": tunnel_result.port,
-                    "available": True,
-                }]
+                new_data = [
+                    {
+                        "address": tunnel_result.address,
+                        "port": tunnel_result.port,
+                        "available": True,
+                    }
+                ]
 
                 existing_data.extend(new_data)
 
@@ -373,9 +375,12 @@ async def tunnel_task_concurrently(
     """Create multiple tunnels concurrently for a given RSD device"""
     tasks = [
         tunnel_task(
-            rsd, script_mode=True, tunnels_addresses_file=tunnels_addresses_file,
+            rsd,
+            script_mode=True,
+            tunnels_addresses_file=tunnels_addresses_file,
             creating_tunnels_signal_file=creating_tunnels_signal_file,
-            close_tunnels_signal_file=close_tunnels_signal_file, protocol=protocol,
+            close_tunnels_signal_file=close_tunnels_signal_file,
+            protocol=protocol,
         )
         for _ in range(tunnels_to_create)
     ]

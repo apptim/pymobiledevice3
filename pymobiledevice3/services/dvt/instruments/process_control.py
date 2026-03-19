@@ -2,7 +2,7 @@ import dataclasses
 import typing
 from typing import Optional
 
-from pymobiledevice3.exceptions import DisableMemoryLimitError, DvtException, DeviceLockedError
+from pymobiledevice3.exceptions import DeviceLockedError, DisableMemoryLimitError, DvtException
 from pymobiledevice3.osu.os_utils import get_os_utils
 from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
 from pymobiledevice3.services.remote_server import MessageAux

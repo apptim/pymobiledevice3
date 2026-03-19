@@ -521,4 +521,3 @@ class DeviceLockedError(PyMobileDevice3Exception):
     """The device is locked"""
 
     pass
-

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import logging
-import time
 
 from pymobiledevice3.exceptions import (
     AmfiError,

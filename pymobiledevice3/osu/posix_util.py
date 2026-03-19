@@ -107,6 +107,7 @@ class Linux(Posix):
         else:
             return Path.home()
 
+
 class Cygwin(Posix):
     @property
     def usbmux_address(self) -> tuple[str, int]:

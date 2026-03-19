@@ -1,10 +1,11 @@
 import os
 import uuid
+from collections.abc import Mapping
 from enum import Enum
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Callable, Mapping, Optional
+from typing import Callable, Optional
 from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from parameter_decorators import str_to_path
@@ -15,7 +16,7 @@ from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.services.afc import AfcService
 from pymobiledevice3.services.lockdown_service import LockdownService
 
-GET_APPS_ADDITIONAL_INFO = {'ReturnAttributes': ['CFBundleIdentifier', 'StaticDiskUsage']}
+GET_APPS_ADDITIONAL_INFO = {"ReturnAttributes": ["CFBundleIdentifier", "StaticDiskUsage"]}
 
 TEMP_REMOTE_BASEDIR = "/PublicStaging/pymobiledevice3"
 
@@ -288,7 +289,7 @@ class InstallationProxyService(LockdownService):
         return self.service.send_recv_plist(cmd).get("LookupResult")
 
     def get_apps(self, app_types: Optional[list[str]] = None, calculate_sizes: bool = False) -> Mapping[str, Mapping]:
-        """ get applications according to given criteria """
+        """get applications according to given criteria"""
         result = self.lookup()
         if calculate_sizes:
             additional_info = self.lookup(GET_APPS_ADDITIONAL_INFO)
@@ -297,6 +298,6 @@ class InstallationProxyService(LockdownService):
         # filter results
         filtered_result = {}
         for bundle_identifier, app in result.items():
-            if (app_types is None) or (app['ApplicationType'] in app_types):
+            if (app_types is None) or (app["ApplicationType"] in app_types):
                 filtered_result[bundle_identifier] = app
         return filtered_result

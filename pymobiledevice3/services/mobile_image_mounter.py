@@ -1,7 +1,6 @@
 import hashlib
 import logging
 import plistlib
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -93,7 +92,7 @@ class MobileImageMounterService(LockdownService):
                 raise NotMountedError(response)
             elif error == "InternalError":
                 raise InternalError(response)
-            elif error == 'DeviceLocked':
+            elif error == "DeviceLocked":
                 raise DeviceLockedError()
             else:
                 raise PyMobileDevice3Exception(response)
@@ -361,9 +360,9 @@ def auto_mount_developer(
             developer_disk_image_dir.mkdir(exist_ok=True, parents=True)
         except PermissionError:
             if custom_path:
-                developer_disk_image_dir = Path(custom_path) / f'{version}'
-                image_path = developer_disk_image_dir / 'DeveloperDiskImage.dmg'
-                signature = image_path.with_suffix('.signature')
+                developer_disk_image_dir = Path(custom_path) / f"{version}"
+                image_path = developer_disk_image_dir / "DeveloperDiskImage.dmg"
+                signature = image_path.with_suffix(".signature")
                 developer_disk_image_dir.mkdir(exist_ok=True, parents=True)
             else:
                 raise

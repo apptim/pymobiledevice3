@@ -11,10 +11,10 @@ import plistlib
 import ssl
 import struct
 import sys
-if sys.platform != 'win32':
-    from os import chown
 
-from os import getenv
+if sys.platform != "win32":
+    pass
+
 from abc import ABC, abstractmethod
 from asyncio import CancelledError, StreamReader, StreamWriter
 from collections import namedtuple
