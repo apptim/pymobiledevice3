@@ -111,6 +111,7 @@ brew install openssl
     [wsl2]
     networkingMode=mirrored
     ```
+
 - Linux:
   - Install `usbmuxd`: <https://github.com/libimobiledevice/usbmuxd>
 
