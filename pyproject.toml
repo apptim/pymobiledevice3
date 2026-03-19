@@ -56,13 +56,12 @@ exclude = ["docs*", "tests*"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
-version = { attr = "pymobiledevice3._version.__version__" }
 
 [tool.setuptools_scm]
 version_file = "pymobiledevice3/_version.py"
 
 [build-system]
-requires = ["setuptools>=43.0.0", "setuptools_scm>=8", "wheel"]
+requires = ["setuptools>=43.0.0", "setuptools_scm>=8,<10", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.ruff]
