@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import plistlib
 import socket
@@ -7,13 +8,17 @@ import struct
 import time
 import xml
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import IPython
 from pygments import formatters, highlight, lexers
 
-from pymobiledevice3.exceptions import ConnectionTerminatedError, DeviceNotFoundError, NoDeviceConnectedError, \
-    PyMobileDevice3Exception
+from pymobiledevice3.exceptions import (
+    ConnectionTerminatedError,
+    DeviceNotFoundError,
+    NoDeviceConnectedError,
+    PyMobileDevice3Exception,
+)
 from pymobiledevice3.osu.os_utils import get_os_utils
 from pymobiledevice3.usbmux import MuxDevice, select_device
 
@@ -39,7 +44,7 @@ print(client.recvall(20))
 """
 
 
-def build_plist(d: dict, endianity: str = '>', fmt: Enum = plistlib.FMT_XML) -> bytes:
+def build_plist(d: dict, endianity: str = ">", fmt: Enum = plistlib.FMT_XML) -> bytes:
     """
     Convert a dictionary to a plist-formatted byte string prefixed with a length field.
 
@@ -49,7 +54,7 @@ def build_plist(d: dict, endianity: str = '>', fmt: Enum = plistlib.FMT_XML) -> 
     :return: The plist-formatted byte string.
     """
     payload = plistlib.dumps(d, fmt=fmt)
-    message = struct.pack(endianity + 'L', len(payload))
+    message = struct.pack(endianity + "L", len(payload))
     return message + payload
 
 
@@ -65,37 +70,17 @@ def parse_plist(payload: bytes) -> dict:
     try:
         return plistlib.loads(payload)
     except xml.parsers.expat.ExpatError:
-        payload = bytes([b for b in payload if b >= 0x20 or b in (0x09, 0x0a, 0x0d)])
+        payload = bytes([b for b in payload if b >= 0x20 or b in (0x09, 0x0A, 0x0D)])
         try:
             return plistlib.loads(payload)
-        except plistlib.InvalidFileException:
-            raise PyMobileDevice3Exception(f'parse_plist invalid data: {payload[:100].hex()}')
-    except plistlib.InvalidFileException:
-        raise PyMobileDevice3Exception(f'parse_plist invalid data: {payload[:100].hex()}')
-
-
-def create_context(certfile: str, keyfile: Optional[str] = None) -> ssl.SSLContext:
-    """
-    Create an SSL context for a secure connection.
-
-    :param certfile: The path to the certificate file.
-    :param keyfile: The path to the key file (optional).
-    :return: An SSL context object.
-    """
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    if ssl.OPENSSL_VERSION.lower().startswith('openssl'):
-        context.set_ciphers('ALL:!aNULL:!eNULL:@SECLEVEL=0')
-    else:
-        context.set_ciphers('ALL:!aNULL:!eNULL')
-    context.options |= 0x4  # OPENSSL OP_LEGACY_SERVER_CONNECT (required for legacy iOS devices)
-    context.check_hostname = False
-    context.verify_mode = ssl.CERT_NONE
-    context.load_cert_chain(certfile, keyfile)
-    return context
+        except plistlib.InvalidFileException as e:
+            raise PyMobileDevice3Exception(f"parse_plist invalid data: {payload[:100].hex()}") from e
+    except plistlib.InvalidFileException as e:
+        raise PyMobileDevice3Exception(f"parse_plist invalid data: {payload[:100].hex()}") from e
 
 
 class ServiceConnection:
-    """ wrapper for tcp-relay connections """
+    """wrapper for tcp-relay connections"""
 
     def __init__(self, sock: socket.socket, mux_device: MuxDevice = None):
         """
@@ -114,9 +99,15 @@ class ServiceConnection:
         self.reader = None  # type: Optional[asyncio.StreamReader]
         self.writer = None  # type: Optional[asyncio.StreamWriter]
 
+        # SSL/TLS version to be used for connecting to device
+        # TLS v1.2 is supported since iOS 5
+        self.min_ssl_proto = ssl.TLSVersion.TLSv1_2
+        self.max_ssl_proto = ssl.TLSVersion.TLSv1_3
+
     @staticmethod
-    def create_using_tcp(hostname: str, port: int, keep_alive: bool = True,
-                         create_connection_timeout: int = DEFAULT_TIMEOUT) -> 'ServiceConnection':
+    def create_using_tcp(
+        hostname: str, port: int, keep_alive: bool = True, create_connection_timeout: int = DEFAULT_TIMEOUT
+    ) -> "ServiceConnection":
         """
         Create a ServiceConnection using a TCP connection.
 
@@ -133,8 +124,9 @@ class ServiceConnection:
         return ServiceConnection(sock)
 
     @staticmethod
-    def create_using_usbmux(udid: Optional[str], port: int, connection_type: str = None,
-                            usbmux_address: Optional[str] = None) -> 'ServiceConnection':
+    def create_using_usbmux(
+        udid: Optional[str], port: int, connection_type: Optional[str] = None, usbmux_address: Optional[str] = None
+    ) -> "ServiceConnection":
         """
         Create a ServiceConnection using a USBMux connection.
 
@@ -163,18 +155,16 @@ class ServiceConnection:
         self.socket.setblocking(blocking)
 
     def close(self) -> None:
-        """ Close the connection. """
+        """Close the connection."""
         self.socket.close()
 
     async def aio_close(self) -> None:
-        """ Asynchronously close the connection. """
+        """Asynchronously close the connection."""
         if self.writer is None:
             return
         self.writer.close()
-        try:
+        with contextlib.suppress(ssl.SSLError):
             await self.writer.wait_closed()
-        except ssl.SSLError:
-            pass
         self.writer = None
         self.reader = None
 
@@ -187,8 +177,8 @@ class ServiceConnection:
         """
         try:
             return self.socket.recv(length)
-        except ssl.SSLError:
-            raise ConnectionAbortedError()
+        except (ssl.SSLError, BrokenPipeError) as e:
+            raise ConnectionAbortedError() from e
 
     def sendall(self, data: bytes) -> None:
         """
@@ -202,7 +192,7 @@ class ServiceConnection:
         except ssl.SSLEOFError as e:
             raise ConnectionTerminatedError from e
 
-    def send_recv_plist(self, data: dict, endianity: str = '>', fmt: Enum = plistlib.FMT_XML) -> Any:
+    def send_recv_plist(self, data: Union[dict, list], endianity: str = ">", fmt: Enum = plistlib.FMT_XML) -> Any:
         """
         Send a plist to the socket and receive a plist response.
 
@@ -214,7 +204,7 @@ class ServiceConnection:
         self.send_plist(data, endianity=endianity, fmt=fmt)
         return self.recv_plist(endianity=endianity)
 
-    async def aio_send_recv_plist(self, data: dict, endianity: str = '>', fmt: Enum = plistlib.FMT_XML) -> Any:
+    async def aio_send_recv_plist(self, data: dict, endianity: str = ">", fmt: Enum = plistlib.FMT_XML) -> Any:
         """
         Asynchronously send a plist to the socket and receive a plist response.
 
@@ -234,7 +224,7 @@ class ServiceConnection:
         :return: The received data.
         :raises ConnectionAbortedError: If the connection is aborted.
         """
-        data = b''
+        data = b""
         while len(data) < size:
             chunk = self.recv(size - len(data))
             if chunk is None or len(chunk) == 0:
@@ -242,7 +232,7 @@ class ServiceConnection:
             data += chunk
         return data
 
-    def recv_prefixed(self, endianity: str = '>') -> bytes:
+    def recv_prefixed(self, endianity: str = ">") -> bytes:
         """
         Receive a data block prefixed with a length field.
 
@@ -251,8 +241,8 @@ class ServiceConnection:
         """
         size = self.recvall(4)
         if not size or len(size) != 4:
-            return b''
-        size = struct.unpack(endianity + 'L', size)[0]
+            return b""
+        size = struct.unpack(endianity + "L", size)[0]
         while True:
             try:
                 return self.recvall(size)
@@ -269,7 +259,7 @@ class ServiceConnection:
         """
         return await self.reader.readexactly(size)
 
-    async def aio_recv_prefixed(self, endianity: str = '>') -> bytes:
+    async def aio_recv_prefixed(self, endianity: str = ">") -> bytes:
         """
         Asynchronously receive a data block prefixed with a length field.
 
@@ -277,7 +267,7 @@ class ServiceConnection:
         :return: The received data block.
         """
         size = await self.aio_recvall(4)
-        size = struct.unpack(endianity + 'L', size)[0]
+        size = struct.unpack(endianity + "L", size)[0]
         return await self.aio_recvall(size)
 
     def send_prefixed(self, data: bytes) -> None:
@@ -288,33 +278,33 @@ class ServiceConnection:
         """
         if isinstance(data, str):
             data = data.encode()
-        hdr = struct.pack('>L', len(data))
-        msg = b''.join([hdr, data])
+        hdr = struct.pack(">L", len(data))
+        msg = b"".join([hdr, data])
         return self.sendall(msg)
 
-    def recv_plist(self, endianity: str = '>') -> dict:
+    def recv_plist(self, endianity: str = ">") -> Union[dict, list]:
         """
-        Receive a plist from the socket and parse it into a dictionary.
+        Receive a plist from the socket and parse it into a native type.
 
         :param endianity: The byte order ('>' for big-endian, '<' for little-endian).
-        :return: The received plist as a dictionary.
+        :return: The received plist as a native type.
         """
         return parse_plist(self.recv_prefixed(endianity=endianity))
 
-    async def aio_recv_plist(self, endianity: str = '>') -> dict:
+    async def aio_recv_plist(self, endianity: str = ">") -> dict:
         """
-        Asynchronously receive a plist from the socket and parse it into a dictionary.
+        Asynchronously receive a plist from the socket and parse it into a native type.
 
         :param endianity: The byte order ('>' for big-endian, '<' for little-endian).
-        :return: The received plist as a dictionary.
+        :return: The received plist as a native type.
         """
         return parse_plist(await self.aio_recv_prefixed(endianity))
 
-    def send_plist(self, d: dict, endianity: str = '>', fmt: Enum = plistlib.FMT_XML) -> None:
+    def send_plist(self, d: Union[dict, list], endianity: str = ">", fmt: Enum = plistlib.FMT_XML) -> None:
         """
-        Send a dictionary as a plist to the socket.
+        Send a native type as a plist to the socket.
 
-        :param d: The dictionary to send.
+        :param d: The native type to send.
         :param endianity: The byte order ('>' for big-endian, '<' for little-endian).
         :param fmt: The plist format (e.g., plistlib.FMT_XML).
         """
@@ -329,7 +319,7 @@ class ServiceConnection:
         self.writer.write(payload)
         await self.writer.drain()
 
-    async def aio_send_plist(self, d: dict, endianity: str = '>', fmt: Enum = plistlib.FMT_XML) -> None:
+    async def aio_send_plist(self, d: Union[dict, list], endianity: str = ">", fmt: Enum = plistlib.FMT_XML) -> None:
         """
         Asynchronously send a dictionary as a plist to the socket.
 
@@ -339,6 +329,27 @@ class ServiceConnection:
         """
         await self.aio_sendall(build_plist(d, endianity, fmt))
 
+    def create_ssl_context(self, certfile: str, keyfile: Optional[str] = None) -> ssl.SSLContext:
+        """
+        Create an SSL context for a secure connection.
+
+        :param certfile: The path to the certificate file.
+        :param keyfile: The path to the key file (optional).
+        :return: An SSL context object.
+        """
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.minimum_version = self.min_ssl_proto
+        context.maximum_version = self.max_ssl_proto
+        if ssl.OPENSSL_VERSION.lower().startswith("openssl"):
+            context.set_ciphers("ALL:!aNULL:!eNULL:@SECLEVEL=0")
+        else:
+            context.set_ciphers("ALL:!aNULL:!eNULL")
+        context.options |= 0x4  # OPENSSL OP_LEGACY_SERVER_CONNECT (required for legacy iOS devices)
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        context.load_cert_chain(certfile, keyfile)
+        return context
+
     def ssl_start(self, certfile: str, keyfile: Optional[str] = None) -> None:
         """
         Start an SSL connection.
@@ -346,7 +357,10 @@ class ServiceConnection:
         :param certfile: The path to the certificate file.
         :param keyfile: The path to the key file (optional).
         """
-        self.socket = create_context(certfile, keyfile=keyfile).wrap_socket(self.socket)
+        try:
+            self.socket = self.create_ssl_context(certfile, keyfile=keyfile).wrap_socket(self.socket)
+        except OSError as e:
+            raise ConnectionAbortedError() from e
 
     async def aio_ssl_start(self, certfile: str, keyfile: Optional[str] = None) -> None:
         """
@@ -356,22 +370,21 @@ class ServiceConnection:
         :param keyfile: The path to the key file (optional).
         """
         self.reader, self.writer = await asyncio.open_connection(
-            sock=self.socket,
-            ssl=create_context(certfile, keyfile=keyfile),
-            server_hostname=''
+            sock=self.socket, ssl=self.create_ssl_context(certfile, keyfile=keyfile), server_hostname=""
         )
 
     async def aio_start(self) -> None:
-        """ Asynchronously start a connection. """
+        """Asynchronously start a connection."""
         self.reader, self.writer = await asyncio.open_connection(sock=self.socket)
 
     def shell(self) -> None:
-        """ Start an interactive shell. """
+        """Start an interactive shell."""
         IPython.embed(
-            header=highlight(SHELL_USAGE, lexers.PythonLexer(), formatters.Terminal256Formatter(style='native')),
+            header=highlight(SHELL_USAGE, lexers.PythonLexer(), formatters.Terminal256Formatter(style="native")),
             user_ns={
-                'client': self,
-            })
+                "client": self,
+            },
+        )
 
     def read(self, size: int) -> bytes:
         """

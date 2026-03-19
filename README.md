@@ -5,6 +5,7 @@
 [![Pypi version](https://img.shields.io/pypi/v/pymobiledevice3.svg)](https://pypi.org/project/pymobiledevice3/ "PyPi package")
 [![Downloads](https://static.pepy.tech/personalized-badge/pymobiledevice3?period=total&units=none&left_color=grey&right_color=blue&left_text=Downloads)](https://pepy.tech/project/pymobiledevice3)
 [![Discord](https://img.shields.io/discord/1133265168051208214?logo=Discord&label=Discord)](https://discord.gg/52mZGC3JXJ)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/doronz88/pymobiledevice3)
 <!-- markdownlint-enable MD013 -->
 
 - [PyMobileDevice3](#pymobiledevice3)
@@ -97,6 +98,44 @@ On macOS:
 ```shell
 brew install openssl
 ```
+
+## Platform Notes
+
+- Windows:
+  - Install iTunes from Microsoft Store:
+    <https://apps.microsoft.com/detail/9pb2mz1zmb1s?hl=en-US&gl=US>
+  - For WSL2, enable mirrored networking mode:
+    <https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking>
+
+    ```none
+    [wsl2]
+    networkingMode=mirrored
+    ```
+
+- Linux:
+  - Install `usbmuxd`: <https://github.com/libimobiledevice/usbmuxd>
+
+- OpenSSL:
+  - OpenSSL is explicitly required for older iOS versions (`< 13`).
+
+- Recovery/DFU support
+  - Requires `libusb`.
+
+### Support Matrix (Developer Services)
+
+`iOS >= 17` developer services require tunnel-based transport.
+
+| Host OS | iOS 17.0-17.3.1 | iOS 17.4+ |
+| --- | --- | --- |
+| macOS | Supported | Supported |
+| Windows | Supported (requires additional drivers) | Supported |
+| Linux | Limited | Supported (lockdown tunnel) |
+
+See the detailed guide: [iOS 17+ tunnels](docs/guides/ios17-tunnels.md)
+
+## Common CLI Tasks
+
+See full recipes: [CLI recipes](docs/guides/cli-recipes.md)
 
 On Linux:
 

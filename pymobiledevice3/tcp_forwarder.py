@@ -19,7 +19,7 @@ class TcpForwarderBase:
     MAX_FORWARDED_CONNECTIONS = 200
     TIMEOUT = 1
 
-    def __init__(self, src_port: int, listening_event: threading.Event = None):
+    def __init__(self, src_port: int, listening_event: Optional[threading.Event] = None):
         """
         Initialize a new tcp forwarder
 
@@ -38,8 +38,8 @@ class TcpForwarderBase:
         # socket to its remote socket and vice versa
         self.connections = {}
 
-    def start(self, address='0.0.0.0'):
-        """ forward each connection from given local machine port to remote device port """
+    def start(self, address="127.0.0.1"):
+        """forward each connection from given local machine port to remote device port"""
         # create local tcp server socket
         self.server_socket = socket.socket()
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -51,40 +51,41 @@ class TcpForwarderBase:
         if self.listening_event:
             self.listening_event.set()
 
-        while self.inputs:
-            # will only perform the socket select on the inputs. the outputs will handled
-            # as synchronous blocking
-            readable, writable, exceptional = select.select(self.inputs, [], self.inputs, self.TIMEOUT)
-            if self.stopped.is_set():
-                self.logger.debug("Closing since stopped is set")
-                break
+        try:
+            while self.inputs:
+                # will only perform the socket select on the inputs. the outputs will handled
+                # as synchronous blocking
+                readable, _writable, exceptional = select.select(self.inputs, [], self.inputs, self.TIMEOUT)
+                if self.stopped.is_set():
+                    self.logger.debug("Closing since stopped is set")
+                    break
 
-            closed_sockets = set()
-            for current_sock in readable:
-                self.logger.debug("Processing %r", current_sock)
-                if current_sock is self.server_socket:
-                    self._handle_server_connection()
-                else:
-                    if current_sock not in closed_sockets:
-                        try:
-                            self._handle_data(current_sock, closed_sockets)
-                        except ConnectionResetError:
-                            self.logger.exception("Error when handling data")
-                            self._handle_close_or_error(current_sock)
+                closed_sockets = set()
+                for current_sock in readable:
+                    self.logger.debug("Processing %r", current_sock)
+                    if current_sock is self.server_socket:
+                        self._handle_server_connection()
                     else:
-                        self.logger.debug("Is closed")
+                        if current_sock not in closed_sockets:
+                            try:
+                                self._handle_data(current_sock, closed_sockets)
+                            except ConnectionResetError:
+                                self.logger.error("Error when handling data")
+                                self._handle_close_or_error(current_sock)
+                        else:
+                            self.logger.debug("Is closed")
 
-            for current_sock in exceptional:
-                self.logger.error("Sock failed: %r", current_sock)
-                self._handle_close_or_error(current_sock)
-
-        self.logger.info("Closing everything")
-        # on stop, close all currently opened sockets
-        for current_sock in self.inputs:
-            current_sock.close()
+                for current_sock in exceptional:
+                    self.logger.error("Sock failed: %r", current_sock)
+                    self._handle_close_or_error(current_sock)
+        finally:
+            self.logger.info("Closing everything")
+            # on stop, close all currently opened sockets
+            for current_sock in self.inputs:
+                current_sock.close()
 
     def _handle_close_or_error(self, from_sock):
-        """ if an error occurred its time to close the two sockets """
+        """if an error occurred its time to close the two sockets"""
         other_sock = self.connections[from_sock]
 
         other_sock.close()
@@ -92,7 +93,7 @@ class TcpForwarderBase:
         self.inputs.remove(other_sock)
         self.inputs.remove(from_sock)
 
-        self.logger.info(f'connection {other_sock} was closed')
+        self.logger.info(f"connection {other_sock} was closed")
 
     def _handle_data(self, from_sock, closed_sockets):
         self.logger.debug(f"Handling data from {from_sock}")
@@ -103,8 +104,8 @@ class TcpForwarderBase:
         except BlockingIOError:
             self.logger.warning(f"Non-blocking read failed on {from_sock}, retrying later.")
             return
-        except OSError as e:
-            self.logger.error(f"Error reading from socket {from_sock}: {e}")
+        except OSError:
+            self.logger.error(f"Error reading from socket {from_sock}")
             self._handle_close_or_error(from_sock)
             closed_sockets.add(from_sock)
             return
@@ -126,8 +127,8 @@ class TcpForwarderBase:
                 except BrokenPipeError:
                     self.logger.error(f"Broken pipe error on {other_sock}.")
                     raise
-        except OSError as e:
-            self.logger.error(f"Unhandled error while forwarding data: {e}")
+        except OSError:
+            self.logger.error("Unhandled error while forwarding data")
             self._handle_close_or_error(from_sock)
             closed_sockets.add(from_sock)
             closed_sockets.add(other_sock)
@@ -137,14 +138,14 @@ class TcpForwarderBase:
         pass
 
     def _handle_server_connection(self):
-        """ accept the connection from local machine and attempt to connect at remote """
-        local_connection, client_address = self.server_socket.accept()
+        """accept the connection from local machine and attempt to connect at remote"""
+        local_connection, _client_address = self.server_socket.accept()
         local_connection.setblocking(False)
 
         try:
             remote_connection = self._establish_remote_connection()
         except ConnectionFailedError:
-            self.logger.error(f'failed to connect to port: {self.dst_port}')
+            self.logger.error(f"failed to connect to port: {self.dst_port}")
             local_connection.close()
             return
 
@@ -158,10 +159,10 @@ class TcpForwarderBase:
         self.connections[remote_connection] = local_connection
         self.connections[local_connection] = remote_connection
 
-        self.logger.info('connection established from local to remote')
+        self.logger.info("connection established from local to remote")
 
     def stop(self):
-        """ stop forwarding """
+        """stop forwarding"""
         self.stopped.set()
 
 
@@ -170,8 +171,15 @@ class UsbmuxTcpForwarder(TcpForwarderBase):
     Allows forwarding local tcp connection into the device via a given lockdown connection
     """
 
-    def __init__(self, serial: str, dst_port: int, src_port: int, listening_event: threading.Event = None,
-                 usbmux_connection_type: str = None, usbmux_address: Optional[str] = None):
+    def __init__(
+        self,
+        serial: str,
+        dst_port: int,
+        src_port: int,
+        listening_event: Optional[threading.Event] = None,
+        usbmux_connection_type: Optional[str] = None,
+        usbmux_address: Optional[str] = None,
+    ):
         """
         Initialize a new tcp forwarder
 
@@ -190,8 +198,9 @@ class UsbmuxTcpForwarder(TcpForwarderBase):
 
     def _establish_remote_connection(self) -> socket.socket:
         # connect directly using usbmuxd
-        mux_device = usbmux.select_device(self.serial, connection_type=self.usbmux_connection_type,
-                                          usbmux_address=self.usbmux_address)
+        mux_device = usbmux.select_device(
+            self.serial, connection_type=self.usbmux_connection_type, usbmux_address=self.usbmux_address
+        )
         self.logger.debug("Selected device: %r", mux_device)
         if mux_device is None:
             raise ConnectionFailedError()
@@ -203,8 +212,13 @@ class LockdownTcpForwarder(TcpForwarderBase):
     Allows forwarding local tcp connection into the device via a given lockdown connection
     """
 
-    def __init__(self, service_provider: LockdownServiceProvider, src_port: int, service_name: str,
-                 listening_event: threading.Event = None):
+    def __init__(
+        self,
+        service_provider: LockdownServiceProvider,
+        src_port: int,
+        service_name: str,
+        listening_event: Optional[threading.Event] = None,
+    ):
         """
         Initialize a new tcp forwarder
 

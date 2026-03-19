@@ -1,85 +1,125 @@
-import click
+from pathlib import Path
+from typing import Annotated, Literal
 
-from pymobiledevice3.cli.cli_common import Command, print_json
-from pymobiledevice3.lockdown import LockdownClient
-from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
+import typer
+from typer_injector import InjectingTyper
+
+from pymobiledevice3.cli.cli_common import ServiceProviderDep, print_json
 from pymobiledevice3.services.house_arrest import HouseArrestService
 from pymobiledevice3.services.installation_proxy import InstallationProxyService
 
-
-@click.group()
-def cli() -> None:
-    pass
-
-
-@cli.group()
-def apps() -> None:
-    """ Manage installed applications """
-    pass
+cli = InjectingTyper(
+    name="apps",
+    help="List, query, install, uninstall, and inspect apps on the device.",
+    no_args_is_help=True,
+)
 
 
-@apps.command('list', cls=Command)
-@click.option('app_type', '-t', '--type', type=click.Choice(['System', 'User', 'Hidden', 'Any']), default='Any',
-              help='include only applications of given type')
-@click.option('--calculate-sizes/--no-calculate-size', default=False)
-def apps_list(service_provider: LockdownServiceProvider, app_type: str, calculate_sizes: bool) -> None:
-    """ list installed apps """
-    print_json(InstallationProxyService(lockdown=service_provider).get_apps(application_type=app_type,
-                                                                            calculate_sizes=calculate_sizes))
+@cli.command("list")
+def apps_list(
+    service_provider: ServiceProviderDep,
+    app_type: Annotated[
+        Literal["System", "User", "Hidden", "Any"],
+        typer.Option(
+            "--type",
+            "-t",
+            help="Filter by application type (System/User/Hidden/Any).",
+        ),
+    ] = "Any",
+    calculate_sizes: Annotated[
+        bool,
+        typer.Option(help="Include app size information (slower)."),
+    ] = False,
+) -> None:
+    """List installed apps."""
+    print_json(
+        InstallationProxyService(lockdown=service_provider).get_apps(
+            application_type=app_type, calculate_sizes=calculate_sizes
+        )
+    )
 
 
-@apps.command('query', cls=Command)
-@click.argument('bundle_identifiers', nargs=-1)
-@click.option('--calculate-sizes/--no-calculate-size', default=False)
-def apps_query(service_provider: LockdownServiceProvider, bundle_identifiers: list[str], calculate_sizes: bool) -> None:
-    """ query installed apps """
-    print_json(InstallationProxyService(lockdown=service_provider)
-               .get_apps(calculate_sizes=calculate_sizes, bundle_identifiers=bundle_identifiers))
+@cli.command("query")
+def apps_query(
+    service_provider: ServiceProviderDep,
+    bundle_identifiers: list[str],
+    calculate_sizes: Annotated[
+        bool,
+        typer.Option(help="Include app size information (slower)."),
+    ] = False,
+) -> None:
+    """Return metadata for specific bundle identifiers."""
+    print_json(
+        InstallationProxyService(lockdown=service_provider).get_apps(
+            calculate_sizes=calculate_sizes, bundle_identifiers=bundle_identifiers
+        )
+    )
 
 
-@apps.command('uninstall', cls=Command)
-@click.argument('bundle_id')
-def uninstall(service_provider: LockdownClient, bundle_id):
-    """ uninstall app by given bundle_id """
+@cli.command("uninstall")
+def uninstall(service_provider: ServiceProviderDep, bundle_id: str) -> None:
+    """Uninstall an app by bundle identifier."""
     InstallationProxyService(lockdown=service_provider).uninstall(bundle_id)
 
 
-@apps.command('install', cls=Command)
-@click.argument('package', type=click.Path(exists=True))
-def install(service_provider: LockdownServiceProvider, package: str) -> None:
-    """ install given .ipa/.app/.ipcc """
-    InstallationProxyService(lockdown=service_provider).install_from_local(package)
+@cli.command("install")
+def install(
+    service_provider: ServiceProviderDep,
+    package: Annotated[
+        Path,
+        typer.Argument(exists=True),
+    ],
+    developer: Annotated[
+        bool,
+        typer.Option(help="Install developer package"),
+    ] = False,
+) -> None:
+    """Install a local .ipa/.app/.ipcc package."""
+    InstallationProxyService(lockdown=service_provider).install_from_local(package, developer=developer)
 
 
-@apps.command('afc', cls=Command)
-@click.option('--documents', is_flag=True)
-@click.argument('bundle_id')
-def afc(service_provider: LockdownClient, bundle_id: str, documents: bool):
-    """ open an AFC shell for given bundle_id, assuming its profile is installed """
+@cli.command("afc")
+def afc(
+    service_provider: ServiceProviderDep, bundle_id: str, documents: Annotated[bool, typer.Option()] = False
+) -> None:
+    """Open an AFC shell into the app container; pass --documents for Documents-only."""
     HouseArrestService(lockdown=service_provider, bundle_id=bundle_id, documents_only=documents).shell()
 
 
-@apps.command('pull', cls=Command)
-@click.argument('bundle_id')
-@click.argument('remote_file', type=click.Path(exists=False))
-@click.argument('local_file', type=click.Path(exists=False))
-def pull(service_provider: LockdownClient, bundle_id: str, remote_file: str, local_file: str):
-    """ pull remote file from specified bundle_id """
-    HouseArrestService(lockdown=service_provider, bundle_id=bundle_id).pull(remote_file, local_file)
+@cli.command("pull")
+def pull(
+    service_provider: ServiceProviderDep,
+    bundle_id: str,
+    remote_file: str,
+    local_file: Path,
+    documents: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Pull a file from an app container to a local path."""
+    HouseArrestService(lockdown=service_provider, bundle_id=bundle_id, documents_only=documents).pull(
+        remote_file, str(local_file)
+    )
 
 
-@apps.command('push', cls=Command)
-@click.argument('bundle_id')
-@click.argument('local_file', type=click.Path(exists=False))
-@click.argument('remote_file', type=click.Path(exists=False))
-def push(service_provider: LockdownClient, bundle_id: str, local_file: str, remote_file: str):
-    """ push local file into specified bundle_id """
-    HouseArrestService(lockdown=service_provider, bundle_id=bundle_id).push(local_file, remote_file)
+@cli.command("push")
+def push(
+    service_provider: ServiceProviderDep,
+    bundle_id: str,
+    local_file: Path,
+    remote_file: str,
+    documents: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Push a local file into an app container."""
+    HouseArrestService(lockdown=service_provider, bundle_id=bundle_id, documents_only=documents).push(
+        str(local_file), remote_file
+    )
 
 
-@apps.command('rm', cls=Command)
-@click.argument('bundle_id')
-@click.argument('remote_file', type=click.Path(exists=False))
-def rm(service_provider: LockdownClient, bundle_id: str, remote_file: str):
-    """ remove remote file from specified bundle_id """
-    HouseArrestService(lockdown=service_provider, bundle_id=bundle_id).rm(remote_file)
+@cli.command("rm")
+def rm(
+    service_provider: ServiceProviderDep,
+    bundle_id: str,
+    remote_file: str,
+    documents: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Delete a file from an app container."""
+    HouseArrestService(lockdown=service_provider, bundle_id=bundle_id, documents_only=documents).rm(remote_file)

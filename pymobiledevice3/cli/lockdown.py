@@ -1,14 +1,15 @@
+import ast
 import asyncio
 import logging
 import plistlib
 from pathlib import Path
-from typing import Optional
+from typing import Annotated, Literal, Optional
 
-import click
+import typer
+from typer_injector import InjectingTyper
 
-from pymobiledevice3.cli.cli_common import Command, CommandWithoutAutopair, print_json, sudo_required
+from pymobiledevice3.cli.cli_common import NoAutoPairServiceProviderDep, ServiceProviderDep, print_json, sudo_required
 from pymobiledevice3.cli.remote import tunnel_task
-from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
 from pymobiledevice3.remote.common import TunnelProtocol
 from pymobiledevice3.remote.tunnel_service import CoreDeviceTunnelProxy
@@ -16,170 +17,178 @@ from pymobiledevice3.services.heartbeat import HeartbeatService
 
 logger = logging.getLogger(__name__)
 
-
-@click.group()
-def cli() -> None:
-    pass
-
-
-@cli.group('lockdown')
-def lockdown_group() -> None:
-    """ Pair/Unpair device or access other lockdown services """
-    pass
+cli = InjectingTyper(
+    name="lockdown",
+    help="Pair/Unpair device or access other lockdown services",
+    no_args_is_help=True,
+)
 
 
-@lockdown_group.command('recovery', cls=Command)
-def lockdown_recovery(service_provider: LockdownClient):
-    """ enter recovery """
+@cli.command("recovery")
+def lockdown_recovery(service_provider: ServiceProviderDep) -> None:
+    """enter recovery"""
     print_json(service_provider.enter_recovery())
 
 
-@lockdown_group.command('service', cls=Command)
-@click.argument('service_name')
-def lockdown_service(service_provider: LockdownServiceProvider, service_name):
-    """ send-receive raw service messages with a given service name"""
+@cli.command("service")
+def lockdown_service(service_provider: ServiceProviderDep, service_name: str) -> None:
+    """send-receive raw service messages with a given service name"""
     service_provider.start_lockdown_service(service_name).shell()
 
 
-@lockdown_group.command('developer-service', cls=Command)
-@click.argument('service_name')
-def lockdown_developer_service(service_provider: LockdownServiceProvider, service_name):
-    """ send-receive raw service messages with a given developer service name """
+@cli.command("developer-service")
+def lockdown_developer_service(service_provider: ServiceProviderDep, service_name: str) -> None:
+    """send-receive raw service messages with a given developer service name"""
     service_provider.start_lockdown_developer_service(service_name).shell()
 
 
-@lockdown_group.command('info', cls=Command)
-def lockdown_info(service_provider: LockdownServiceProvider):
-    """ query all lockdown values """
+@cli.command("info")
+def lockdown_info(service_provider: ServiceProviderDep) -> None:
+    """query all lockdown values"""
     print_json(service_provider.all_values)
 
 
-@lockdown_group.command('get', cls=Command)
-@click.argument('domain', required=False)
-@click.argument('key', required=False)
-def lockdown_get(service_provider: LockdownClient, domain, key):
-    """ query lockdown values by their domain and key names """
+@cli.command("get")
+def lockdown_get(service_provider: ServiceProviderDep, domain: Optional[str] = None, key: Optional[str] = None) -> None:
+    """query lockdown values by their domain and key names"""
     print_json(service_provider.get_value(domain=domain, key=key))
 
 
-@lockdown_group.command('set', cls=Command)
-@click.argument('value')
-@click.argument('domain', required=False)
-@click.argument('key', required=False)
-def lockdown_set(service_provider: LockdownClient, value, domain, key):
-    """ set a lockdown value using python's eval() """
-    print_json(service_provider.set_value(value=eval(value), domain=domain, key=key))
+@cli.command("set")
+def lockdown_set(
+    service_provider: ServiceProviderDep,
+    value: str,
+    domain: Optional[str] = None,
+    key: Optional[str] = None,
+) -> None:
+    """set a lockdown value using python's ast.literal_eval()"""
+    print_json(service_provider.set_value(value=ast.literal_eval(value), domain=domain, key=key))
 
 
-@lockdown_group.command('remove', cls=Command)
-@click.argument('domain')
-@click.argument('key')
-def lockdown_remove(service_provider: LockdownClient, domain, key):
-    """ remove a domain/key pair """
+@cli.command("remove")
+def lockdown_remove(service_provider: ServiceProviderDep, domain: str, key: str) -> None:
+    """remove a domain/key pair"""
     print_json(service_provider.remove_value(domain=domain, key=key))
 
 
-@lockdown_group.command('unpair', cls=CommandWithoutAutopair)
-@click.argument('host_id', required=False)
-def lockdown_unpair(service_provider: LockdownClient, host_id: str = None):
-    """ unpair from connected device """
+@cli.command("unpair")
+def lockdown_unpair(service_provider: NoAutoPairServiceProviderDep, host_id: Optional[str] = None) -> None:
+    """unpair from connected device"""
     service_provider.unpair(host_id=host_id)
 
 
-@lockdown_group.command('pair', cls=CommandWithoutAutopair)
-def lockdown_pair(service_provider: LockdownClient):
-    """ pair device """
+@cli.command("pair")
+def lockdown_pair(service_provider: NoAutoPairServiceProviderDep) -> None:
+    """pair device"""
     service_provider.pair()
 
 
-@lockdown_group.command('pair-supervised', cls=CommandWithoutAutopair)
-@click.argument('keybag', type=click.Path(file_okay=True, dir_okay=False, exists=True))
-def lockdown_pair_supervised(service_provider: LockdownClient, keybag: str) -> None:
-    """ pair supervised device """
-    service_provider.pair_supervised(Path(keybag))
+@cli.command("pair-supervised")
+def lockdown_pair_supervised(
+    service_provider: NoAutoPairServiceProviderDep,
+    keybag: Annotated[
+        Path,
+        typer.Argument(file_okay=True, dir_okay=False, exists=True),
+    ],
+) -> None:
+    """pair supervised device"""
+    service_provider.pair_supervised(keybag)
 
 
-@lockdown_group.command('save-pair-record', cls=CommandWithoutAutopair)
-@click.argument('output', type=click.File('wb'))
-def lockdown_save_pair_record(service_provider: LockdownClient, output):
-    """ save pair record to specified location """
+@cli.command("save-pair-record")
+def lockdown_save_pair_record(service_provider: NoAutoPairServiceProviderDep, output: Path) -> None:
+    """save pair record to specified location"""
     if service_provider.pair_record is None:
-        logger.error('no pairing record was found')
+        logger.error("no pairing record was found")
         return
-    plistlib.dump(service_provider.pair_record, output)
+    output.write_bytes(plistlib.dumps(service_provider.pair_record))
 
 
-@lockdown_group.command('date', cls=Command)
-def lockdown_date(service_provider: LockdownClient):
-    """ get device date """
+@cli.command("date")
+def lockdown_date(service_provider: ServiceProviderDep) -> None:
+    """get device date"""
     print(service_provider.date)
 
 
-@lockdown_group.command('heartbeat', cls=Command)
-def lockdown_heartbeat(service_provider: LockdownClient):
-    """ start heartbeat service """
+@cli.command("heartbeat")
+def lockdown_heartbeat(service_provider: ServiceProviderDep) -> None:
+    """start heartbeat service"""
     HeartbeatService(service_provider).start()
 
 
-@lockdown_group.command('language', cls=Command)
-@click.argument('language', required=False)
-def lockdown_language(service_provider: LockdownClient, language: Optional[str]) -> None:
-    """ Get/Set current language settings """
+@cli.command("language")
+def lockdown_language(
+    service_provider: ServiceProviderDep, language: Annotated[Optional[str], typer.Argument()] = None
+) -> None:
+    """Get/Set current language settings"""
     if language is not None:
         service_provider.set_language(language)
     print_json(service_provider.language)
 
 
-@lockdown_group.command('locale', cls=Command)
-@click.argument('locale', required=False)
-def lockdown_locale(service_provider: LockdownClient, locale: Optional[str]) -> None:
-    """ Get/Set current language settings """
+@cli.command("locale")
+def lockdown_locale(
+    service_provider: ServiceProviderDep, locale: Annotated[Optional[str], typer.Argument()] = None
+) -> None:
+    """Get/Set current language settings"""
     if locale is not None:
         service_provider.set_locale(locale)
     print_json(service_provider.locale)
 
 
-@lockdown_group.command('device-name', cls=Command)
-@click.argument('new_name', required=False)
-def lockdown_device_name(service_provider: LockdownClient, new_name):
-    """ get/set current device name """
+@cli.command("device-name")
+def lockdown_device_name(service_provider: ServiceProviderDep, new_name: Optional[str] = None) -> None:
+    """get/set current device name"""
     if new_name:
-        service_provider.set_value(new_name, key='DeviceName')
+        service_provider.set_value(new_name, key="DeviceName")
     else:
-        print(f'{service_provider.get_value(key="DeviceName")}')
+        print(f"{service_provider.get_value(key='DeviceName')}")
 
 
-@lockdown_group.command('wifi-connections', cls=Command)
-@click.argument('state', type=click.Choice(['on', 'off']), required=False)
-def lockdown_wifi_connections(service_provider: LockdownClient, state):
-    """ get/set wifi connections state """
+@cli.command("wifi-connections")
+def lockdown_wifi_connections(
+    service_provider: ServiceProviderDep, state: Optional[Literal["on", "off"]] = None
+) -> None:
+    """get/set wifi connections state"""
     if not state:
         # show current state
-        print_json(service_provider.get_value(domain='com.apple.mobile.wireless_lockdown'))
+        print_json(service_provider.get_value(domain="com.apple.mobile.wireless_lockdown"))
     else:
         # enable/disable
-        service_provider.enable_wifi_connections = state == 'on'
+        service_provider.enable_wifi_connections = state == "on"
 
 
-@lockdown_group.command('start-tunnel', cls=Command)
-@click.option('--script-mode', is_flag=True,
-              help='Show only HOST and port number to allow easy parsing from external shell scripts')
+async def async_cli_start_tunnel(service_provider: LockdownServiceProvider, script_mode: bool) -> None:
+    await tunnel_task(
+        await CoreDeviceTunnelProxy.create(service_provider),
+        script_mode=script_mode,
+        secrets=None,
+        protocol=TunnelProtocol.TCP,
+    )
+
+
+@cli.command("start-tunnel")
 @sudo_required
 def cli_start_tunnel(
-        service_provider: LockdownServiceProvider, script_mode: bool) -> None:
-    """ start tunnel """
-    service = CoreDeviceTunnelProxy(service_provider)
-    asyncio.run(tunnel_task(service, script_mode=script_mode, secrets=None, protocol=TunnelProtocol.TCP), debug=True)
+    service_provider: ServiceProviderDep,
+    script_mode: Annotated[
+        bool,
+        typer.Option(help="Show only HOST and port number to allow easy parsing from external shell scripts"),
+    ] = False,
+) -> None:
+    """start tunnel"""
+    asyncio.run(async_cli_start_tunnel(service_provider, script_mode), debug=True)
 
 
-@lockdown_group.command('assistive-touch', cls=Command)
-@click.argument('state', type=click.Choice(['on', 'off']), required=False)
-def lockdown_assistive_touch(service_provider: LockdownClient, state: str) -> None:
-    """ get/set assistive touch icon state (visibility) """
+@cli.command("assistive-touch")
+def lockdown_assistive_touch(
+    service_provider: ServiceProviderDep, state: Optional[Literal["on", "off"]] = None
+) -> None:
+    """get/set assistive touch icon state (visibility)"""
     if not state:
-        key = 'AssistiveTouchEnabledByiTunes'
-        accessibility_values = service_provider.get_value('com.apple.Accessibility')
+        key = "AssistiveTouchEnabledByiTunes"
+        accessibility_values = service_provider.get_value("com.apple.Accessibility")
         print_json({key: bool(accessibility_values[key])})
     else:
         # enable/disable
-        service_provider.assistive_touch = state == 'on'
+        service_provider.assistive_touch = state == "on"

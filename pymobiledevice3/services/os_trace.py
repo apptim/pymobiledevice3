@@ -9,8 +9,6 @@ from enum import IntEnum
 from pathlib import Path
 from tarfile import TarFile
 
-from construct import Adapter, Byte, Bytes, Computed, Enum, Int16ul, Int32ul, Optional, RepeatUntil, Struct, this
-
 from pymobiledevice3.exceptions import PyMobileDevice3Exception
 from pymobiledevice3.lockdown import LockdownClient
 from pymobiledevice3.lockdown_service_provider import LockdownServiceProvider
@@ -18,8 +16,8 @@ from pymobiledevice3.services.lockdown_service import LockdownService
 from pymobiledevice3.utils import try_decode
 
 CHUNK_SIZE = 4096
-TIME_FORMAT = '%H:%M:%S'
-SYSLOG_LINE_SPLITTER = '\n\x00'
+TIME_FORMAT = "%H:%M:%S"
+SYSLOG_LINE_SPLITTER = "\n\x00"
 
 
 class SyslogLogLevel(IntEnum):
@@ -45,52 +43,107 @@ class SyslogEntry:
     timestamp: datetime
     level: SyslogLogLevel
     image_name: str
+    image_offset: int
     filename: str
     message: str
     label: typing.Optional[SyslogLabel] = None
 
 
-class TimestampAdapter(Adapter):
-    def _decode(self, obj, context, path):
-        return datetime.fromtimestamp(obj.seconds + (obj.microseconds / 1000000))
+def parse_syslog_entry(data: bytes) -> SyslogEntry:
+    """
+    Parse a syslog entry from binary data.
 
-    def _encode(self, obj, context, path):
-        return list(map(int, obj.split(".")))
+    :param data: Raw binary data
+    :return: SyslogEntry
+    """
+    offset = 0
 
+    # Skip first 9 bytes
+    offset += 9
 
-timestamp_t = Struct(
-    'seconds' / Int32ul,
-    Bytes(4),
-    'microseconds' / Int32ul
-)
+    # Parse pid (4 bytes, little-endian unsigned int)
+    pid = struct.unpack("<I", data[offset : offset + 4])[0]
+    offset += 4
 
-syslog_t = Struct(
-    Bytes(9),
-    'pid' / Int32ul,
-    Bytes(42),
-    'timestamp' / TimestampAdapter(timestamp_t),
-    Bytes(1),
-    'level' / Enum(Byte, Notice=0, Info=0x01, Debug=0x02, Error=0x10, Fault=0x11),
-    Bytes(38),
-    'image_name_size' / Int16ul,
-    'message_size' / Int16ul,
-    Bytes(6),
-    '_subsystem_size' / Int32ul,
-    '_category_size' / Int32ul,
-    Bytes(4),
-    '_filename' / RepeatUntil(lambda x, lst, ctx: lst[-1] == 0, Byte),
-    'filename' / Computed(lambda ctx: try_decode(bytearray(ctx._filename[:-1]))),
-    '_image_name' / Bytes(this.image_name_size),
-    'image_name' / Computed(lambda ctx: try_decode(ctx._image_name[:-1])),
-    '_message' / Bytes(this.message_size),
-    'message' / Computed(lambda ctx: try_decode(ctx._message[:-1])),
-    'label' / Optional(Struct(
-        '_subsystem' / Bytes(this._._subsystem_size),
-        'subsystem' / Computed(lambda ctx: try_decode(ctx._subsystem[:-1])),
-        '_category' / Bytes(this._._category_size),
-        'category' / Computed(lambda ctx: try_decode(ctx._category[:-1])),
-    )),
-)
+    # Skip 42 bytes
+    offset += 42
+
+    # Parse timestamp
+    seconds = struct.unpack("<I", data[offset : offset + 4])[0]
+    offset += 4
+    offset += 4  # Skip 4 bytes
+    microseconds = struct.unpack("<I", data[offset : offset + 4])[0]
+    offset += 4
+    timestamp = datetime.fromtimestamp(seconds + (microseconds / 1000000))
+
+    # Skip 1 byte
+    offset += 1
+
+    # Parse level (1 byte)
+    level = data[offset]
+    offset += 1
+
+    # Skip 38 bytes
+    offset += 38
+
+    # Parse image_name_size (2 bytes, little-endian unsigned short)
+    image_name_size = struct.unpack("<H", data[offset : offset + 2])[0]
+    offset += 2
+
+    # Parse message_size (2 bytes, little-endian unsigned short)
+    message_size = struct.unpack("<H", data[offset : offset + 2])[0]
+    offset += 2
+
+    # Skip 2 bytes
+    offset += 2
+
+    # Parse sender_image_offset (4 bytes, little-endian unsigned int)
+    sender_image_offset = struct.unpack("<I", data[offset : offset + 4])[0]
+    offset += 4
+
+    # Parse subsystem_size (4 bytes, little-endian unsigned int)
+    subsystem_size = struct.unpack("<I", data[offset : offset + 4])[0]
+    offset += 4
+
+    # Parse category_size (4 bytes, little-endian unsigned int)
+    category_size = struct.unpack("<I", data[offset : offset + 4])[0]
+    offset += 4
+
+    # Skip 4 bytes
+    offset += 4
+
+    # Parse filename (null-terminated)
+    filename_end = data.find(b"\x00", offset)
+    filename = try_decode(data[offset:filename_end])
+    offset = filename_end + 1
+
+    # Parse image_name
+    image_name = try_decode(data[offset : offset + image_name_size - 1])
+    offset += image_name_size
+
+    # Parse message
+    message = try_decode(data[offset : offset + message_size - 1])
+    offset += message_size
+
+    # Parse label (optional)
+    label = None
+    if subsystem_size > 0 and category_size > 0:
+        subsystem = try_decode(data[offset : offset + subsystem_size - 1])
+        offset += subsystem_size
+        category = try_decode(data[offset : offset + category_size - 1])
+        offset += category_size
+        label = SyslogLabel(subsystem=subsystem, category=category)
+
+    return SyslogEntry(
+        pid=pid,
+        timestamp=timestamp,
+        level=SyslogLogLevel(level),
+        image_name=image_name,
+        image_offset=sender_image_offset,
+        filename=filename,
+        message=message,
+        label=label,
+    )
 
 
 class OsTraceService(LockdownService):
@@ -101,8 +154,9 @@ class OsTraceService(LockdownService):
     * Get old stored syslog archive in PAX format (can be extracted using `pax -r < filename`).
         * Archive contain the contents are the `/var/db/diagnostics` directory
     """
-    SERVICE_NAME = 'com.apple.os_trace_relay'
-    RSD_SERVICE_NAME = 'com.apple.os_trace_relay.shim.remote'
+
+    SERVICE_NAME = "com.apple.os_trace_relay"
+    RSD_SERVICE_NAME = "com.apple.os_trace_relay.shim.remote"
 
     def __init__(self, lockdown: LockdownServiceProvider):
         if isinstance(lockdown, LockdownClient):
@@ -111,7 +165,7 @@ class OsTraceService(LockdownService):
             super().__init__(lockdown, self.RSD_SERVICE_NAME)
 
     def get_pid_list(self):
-        self.service.send_plist({'Request': 'PidList'})
+        self.service.send_plist({"Request": "PidList"})
 
         # ignore first received unknown byte
         self.service.recvall(1)
@@ -119,33 +173,44 @@ class OsTraceService(LockdownService):
         response = self.service.recv_prefixed()
         return plistlib.loads(response)
 
-    def create_archive(self, out: typing.IO, size_limit: int = None, age_limit: int = None, start_time: int = None):
-        request = {'Request': 'CreateArchive'}
+    def create_archive(
+        self,
+        out: typing.IO,
+        size_limit: typing.Optional[int] = None,
+        age_limit: typing.Optional[int] = None,
+        start_time: typing.Optional[int] = None,
+    ):
+        request = {"Request": "CreateArchive"}
 
         if size_limit is not None:
-            request.update({'SizeLimit': size_limit})
+            request.update({"SizeLimit": size_limit})
 
         if age_limit is not None:
-            request.update({'AgeLimit': age_limit})
+            request.update({"AgeLimit": age_limit})
 
         if start_time is not None:
-            request.update({'StartTime': start_time})
+            request.update({"StartTime": start_time})
 
         self.service.send_plist(request)
 
-        assert 1 == self.service.recvall(1)[0]
+        assert self.service.recvall(1)[0] == 1
 
-        assert plistlib.loads(self.service.recv_prefixed()).get('Status') == 'RequestSuccessful', 'Invalid status'
+        assert plistlib.loads(self.service.recv_prefixed()).get("Status") == "RequestSuccessful", "Invalid status"
 
         while True:
             try:
-                assert 3 == self.service.recvall(1)[0], 'invalid magic'
+                assert self.service.recvall(1)[0] == 3, "invalid magic"
             except ConnectionAbortedError:
                 break
-            out.write(self.service.recv_prefixed(endianity='<'))
+            out.write(self.service.recv_prefixed(endianity="<"))
 
-    def collect(self, out: str, size_limit: typing.Optional[int] = None, age_limit: typing.Optional[int] = None,
-                start_time: typing.Optional[int] = None) -> None:
+    def collect(
+        self,
+        out: str,
+        size_limit: typing.Optional[int] = None,
+        age_limit: typing.Optional[int] = None,
+        start_time: typing.Optional[int] = None,
+    ) -> None:
         """
         Collect the system logs into a .logarchive that can be viewed later with tools such as log or Console.
 
@@ -155,28 +220,23 @@ class OsTraceService(LockdownService):
         :param start_time: start time of logarchive in unix timestamp
         """
         with tempfile.TemporaryDirectory() as temp_dir:
-            file = Path(temp_dir) / 'foo.tar'
-            with open(file, 'wb') as f:
+            file = Path(temp_dir) / "foo.tar"
+            with open(file, "wb") as f:
                 self.create_archive(f, size_limit=size_limit, age_limit=age_limit, start_time=start_time)
             TarFile(file).extractall(out)
 
     def syslog(self, pid=-1) -> typing.Generator[SyslogEntry, None, None]:
-        self.service.send_plist({'Request': 'StartActivity', 'MessageFilter': 65535, 'Pid': pid, 'StreamFlags': 60})
+        self.service.send_plist({"Request": "StartActivity", "MessageFilter": 65535, "Pid": pid, "StreamFlags": 60})
 
-        length_length, = struct.unpack('<I', self.service.recvall(4))
+        (length_length,) = struct.unpack("<I", self.service.recvall(4))
         length = int(self.service.recvall(length_length)[::-1].hex(), 16)
         response = plistlib.loads(self.service.recvall(length))
 
-        if response.get('Status') != 'RequestSuccessful':
-            raise PyMobileDevice3Exception(f'got invalid response: {response}')
+        if response.get("Status") != "RequestSuccessful":
+            raise PyMobileDevice3Exception(f"got invalid response: {response}")
 
         while True:
-            assert b'\x02' == self.service.recvall(1)
-            length, = struct.unpack('<I', self.service.recvall(4))
+            assert self.service.recvall(1) == b"\x02"
+            (length,) = struct.unpack("<I", self.service.recvall(4))
             line = self.service.recvall(length)
-            entry = syslog_t.parse(line)
-            label = None
-            if entry.label is not None:
-                label = SyslogLabel(subsystem=entry.label.subsystem, category=entry.label.category)
-            yield SyslogEntry(pid=entry.pid, timestamp=entry.timestamp, level=SyslogLogLevel(int(entry.level)),
-                              image_name=entry.image_name, filename=entry.filename, message=entry.message, label=label)
+            yield parse_syslog_entry(line)
